@@ -1,0 +1,15 @@
+# 自动化测试专用 Redis 配置：使用当前 Docker Redis 的逻辑库 0。
+# 密码和 HMAC 密钥必须由测试进程环境变量提供，禁止写入仓库。
+spring:
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      database: 0
+      timeout: 2s
+      connect-timeout: 2s
+
+app:
+  redis:
+    key-secret: ${REDIS_KEY_SECRET:}

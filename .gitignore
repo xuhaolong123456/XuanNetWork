@@ -1,0 +1,26 @@
+# === 日志 ===
+*.log
+backend/logs/
+
+# === 前端（Vite / npm） ===
+node_modules/
+dist/
+.npm-cache/
+
+# === Java / Maven 构建产物 ===
+target/
+*.class
+
+# === JMeter 测试输出 ===
+jmeter-report*/
+jmeter-results/
+
+# === 本机开发配置（含数据库/邮箱/Redis 密码） ===
+application-dev.yml
+
+# === IDE / 系统 ===
+.idea/
+*.iml
+.vscode/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,5 @@
+# 本机开发配置可能包含数据库、邮箱和 Redis 密码，不提交到仓库。
+src/main/resources/application-dev.yml
+
+# Maven 构建产物。
+target/
