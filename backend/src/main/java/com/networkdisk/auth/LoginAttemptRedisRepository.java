@@ -43,9 +43,8 @@ public class LoginAttemptRedisRepository {
     }
 
     /**
-     * Counts every login request for one client device.  This is deliberately
-     * independent of the account name so that a credential-stuffing client
-     * cannot bypass the limit by rotating usernames.
+     * 统计单台客户端设备发起的全部登录请求。此计数独立于账号，
+     * 避免攻击者通过轮换用户名绕过撞库请求频率限制。
      */
     public IpAttemptResult beginDeviceAttempt(String deviceId, int maxAttempts, int ttlSeconds) {
         return beginAttempt(deviceKey(deviceId), maxAttempts, ttlSeconds);

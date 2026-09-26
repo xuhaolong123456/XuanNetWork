@@ -14,7 +14,7 @@ public record LoginRequest(
         @Size(min = 6, max = 64, message = "密码长度为6-64位")
         String password,
 
-        /** Every login requires a fresh image captcha. */
+        /** 每次登录都必须提供新签发的图形验证码。 */
         @NotBlank(message = "请输入验证码")
         @Pattern(regexp = "\\d{4}", message = "验证码为4位数字")
         String captchaCode

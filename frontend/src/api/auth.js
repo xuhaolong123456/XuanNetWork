@@ -1,20 +1,32 @@
 let csrfToken = ''
+let csrfRequest = null
 
-// Remove the legacy JavaScript-readable bearer token during the HttpOnly-cookie migration.
+// 清理迁移到 HttpOnly Cookie 认证前遗留的、可被 JavaScript 读取的令牌。
 if (typeof localStorage !== 'undefined') localStorage.removeItem('access_token')
 
 async function getCsrfToken(forceRefresh = false) {
-  // This endpoint also lets Spring set the readable XSRF-TOKEN cookie; the auth cookie stays HttpOnly.
+  // 此接口会让 Spring 写入可读取的 XSRF-TOKEN Cookie；认证 Cookie 仍保持 HttpOnly。
   if (csrfToken && !forceRefresh) return csrfToken
-  const response = await fetch('/api/v1/auth/csrf', { credentials: 'same-origin' })
-  const result = await response.json().catch(() => null)
-  if (!response.ok || !result?.success) throw new Error(result?.message || '安全令牌获取失败，请刷新页面')
-  csrfToken = result.data
-  return csrfToken
+  // 多个组件同时请求时共用一次签发，避免响应先后覆盖 Cookie。
+  if (!csrfRequest) {
+    csrfRequest = (async () => {
+      const response = await fetch('/api/v1/auth/csrf', { credentials: 'same-origin' })
+      const result = await response.json().catch(() => null)
+      if (!response.ok || !result?.success) throw new Error(result?.message || '安全令牌获取失败，请刷新页面')
+      csrfToken = result.data
+      return csrfToken
+    })().finally(() => { csrfRequest = null })
+  }
+  return csrfRequest
 }
 
-async function csrfHeaders() {
-  // Echo the CSRF token in a custom header so cross-site HTML forms cannot forge unsafe API requests.
+export async function csrfHeaders() {
+  // Cookie 可能在退出登录或其他标签页操作后变化，请求头必须使用当前值。
+  if (typeof document !== 'undefined') {
+    const cookie = document.cookie.split(';').map(value => value.trim())
+      .find(value => value.startsWith('XSRF-TOKEN='))
+    csrfToken = cookie ? decodeURIComponent(cookie.slice('XSRF-TOKEN='.length)) : ''
+  }
   return { 'X-XSRF-TOKEN': csrfToken || await getCsrfToken() }
 }
 
@@ -48,6 +60,7 @@ export async function sendEmailCode(email) {
 const DEVICE_ID_STORAGE_KEY = 'login_device_id'
 
 function createDeviceId() {
+  // 优先使用浏览器 UUID API；不支持时按 UUID v4 位规则生成随机标识。
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID()
   const bytes = new Uint8Array(16)
   globalThis.crypto.getRandomValues(bytes)
@@ -58,6 +71,7 @@ function createDeviceId() {
 }
 
 export function deviceId() {
+  // 同一浏览器复用设备标识，使服务端可以跨请求累计设备级登录频率。
   let value = localStorage.getItem(DEVICE_ID_STORAGE_KEY)
   if (!value) {
     value = createDeviceId()
@@ -76,8 +90,8 @@ export async function login(payload) {
   let response = await sendLogin()
   let result = await response.json().catch(() => null)
 
-  // Logout or a security-filter response can invalidate the in-memory CSRF value.
-  // A 403 without a business error code is rejected before the login handler runs.
+  // 退出登录或安全过滤器的响应可能使内存中的 CSRF 令牌失效。
+  // 登录处理器尚未执行时，安全过滤器可能先返回不带业务错误码的 403。
   if (response.status === 403 && !result?.code) {
     await getCsrfToken(true)
     response = await sendLogin()
@@ -153,6 +167,7 @@ export function logout() {
 }
 
 export function clearLoginSession() {
+  csrfToken = ''
   localStorage.removeItem('access_token')
   localStorage.removeItem('current_user')
 }

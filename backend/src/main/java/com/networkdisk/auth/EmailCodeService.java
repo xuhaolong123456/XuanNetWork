@@ -60,6 +60,7 @@ public class EmailCodeService {
 
         String code = String.format("%06d", random.nextInt(1_000_000));
         try {
+            // 先确认邮件发送成功，再把验证码摘要写入 Redis，避免用户收到不可用的验证码。
             sendMail(email, code);
             if (!redisRepository.completeSend(emailKey, codeDigest(email, code))) {
                 throw new AuthBusinessException("EMAIL_DAILY_LIMITED", "该邮箱今日验证码发送次数已达上限");
@@ -89,6 +90,7 @@ public class EmailCodeService {
             case ACCEPTED -> { }
         }
         try {
+            // Redis 已取得一次性注册锁；完成数据库注册后删除验证码，失败时释放锁以便重试。
             String userId = authService.register(request);
             redisRepository.completeRegistration(emailKey);
             return userId;
@@ -116,6 +118,7 @@ public class EmailCodeService {
     }
 
     private String emailKey(String email) { return hmac("email:" + email); }
+    // Redis 键和值仅保存 HMAC 摘要，避免直接暴露邮箱和验证码。
     private String codeDigest(String email, String code) { return hmac("code:" + email + ":" + (code == null ? "" : code)); }
     private String hmac(String value) {
         try {

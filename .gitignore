@@ -1,6 +1,7 @@
 # === 日志 ===
 *.log
 backend/logs/
+uploads/
 
 # === 前端（Vite / npm） ===
 node_modules/

@@ -10,7 +10,14 @@ spring:
     properties:
       hibernate:
         format_sql: true
+  servlet:
+    multipart:
+      max-file-size: 100MB
+      max-request-size: 100MB
 app:
+  storage:
+    root: ${FILE_STORAGE_ROOT:./uploads}
+    max-file-size-bytes: ${FILE_MAX_SIZE_BYTES:104857600}
   mail.enabled: ${MAIL_ENABLED:true}
   login:
     fail-lock-threshold: ${LOGIN_FAIL_LOCK_THRESHOLD:5}
@@ -24,7 +31,7 @@ app:
     # 仅用于本地开发；部署时必须通过环境变量覆盖。
     token-secret: ${AUTH_TOKEN_SECRET:bG9jYWwtZGV2ZWxvcG1lbnQtdG9rZW4tc2VjcmV0LWNoYW5nZS1tZQ==}
     token-ttl-seconds: ${AUTH_TOKEN_TTL_SECONDS:7200}
-    # False supports local HTTP; set AUTH_COOKIE_SECURE=true when serving over HTTPS.
+    # 设为 false 时支持本地 HTTP；通过 HTTPS 提供服务时应设置 AUTH_COOKIE_SECURE=true。
     cookie-secure: ${AUTH_COOKIE_SECURE:false}
 
 server:

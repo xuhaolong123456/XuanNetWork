@@ -37,6 +37,7 @@ public class TokenService {
 
     public String create(Long userId, String passwordHash) {
         long expiresAt = Instant.now().plusSeconds(ttlSeconds).getEpochSecond();
+        // 将用户 ID、过期时间、随机令牌 ID 和密码指纹写入签名载荷。
         String payload = base64Url("{\"sub\":\"" + userId + "\",\"exp\":" + expiresAt
                 + ",\"jti\":\"" + UUID.randomUUID() + "\",\"ver\":\"" + credentialFingerprint(passwordHash) + "\"}");
         String unsignedToken = HEADER + "." + payload;
@@ -47,7 +48,7 @@ public class TokenService {
         return ttlSeconds;
     }
 
-    /** Returns claims only for a correctly signed, unexpired token. */
+    /** 仅当令牌签名有效且尚未过期时返回其中的声明。 */
     public Optional<Claims> verify(String token) {
         if (token == null || token.length() > 4096) return Optional.empty();
         String[] parts = token.split("\\.", -1);
@@ -55,6 +56,7 @@ public class TokenService {
         try {
             byte[] suppliedSignature = Base64.getUrlDecoder().decode(parts[2]);
             byte[] expectedSignature = signBytes(parts[0] + "." + parts[1]);
+            // 使用定时比较避免签名比较时间泄露与输入字节内容相关的信息。
             if (!MessageDigest.isEqual(expectedSignature, suppliedSignature)) return Optional.empty();
 
             JsonNode claims = objectMapper.readTree(Base64.getUrlDecoder().decode(parts[1]));
@@ -75,7 +77,7 @@ public class TokenService {
         }
     }
 
-    /** A password rehash changes this value, invalidating every earlier token. */
+    /** 密码重新哈希后指纹会改变，从而使此前签发的所有令牌失效。 */
     public boolean hasCurrentPassword(Claims claims, String passwordHash) {
         return MessageDigest.isEqual(claims.credentialFingerprint().getBytes(StandardCharsets.US_ASCII),
                 credentialFingerprint(passwordHash).getBytes(StandardCharsets.US_ASCII));

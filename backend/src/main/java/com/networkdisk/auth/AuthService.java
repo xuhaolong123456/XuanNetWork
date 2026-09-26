@@ -70,7 +70,7 @@ public class AuthService {
         return issueCaptcha(rawUsername, "unknown");
     }
 
-    /** Issues a challenge that may only be used by the requesting device. */
+    /** 签发仅限发起请求的设备使用的图形验证码。 */
     public CaptchaResponse issueCaptcha(String rawUsername, String rawDeviceId) {
         String username = normalizeUsername(rawUsername);
         String deviceId = normalizeDeviceId(rawDeviceId);
@@ -91,13 +91,14 @@ public class AuthService {
     }
 
     /**
-     * Every request must first pass both the network and device rate limits,
-     * then prove a captcha issued for the same username and device.
+     * 每次登录都必须先通过 IP 与设备两级频率限制，
+     * 再证明请求携带的是为当前用户名和设备签发的验证码。
      */
     @Transactional(readOnly = true)
     public LoginResponse login(LoginRequest request, String clientIp, String rawDeviceId) {
         String username = normalizeUsername(request.username());
         String deviceId = normalizeDeviceId(rawDeviceId);
+        // 先按 IP 和设备分别限流，再查询账号，避免攻击者轮换用户名规避请求限制。
         LoginAttemptRedisRepository.IpAttemptResult ipResult = loginAttemptRepository.beginIpAttempt(
                 clientIp == null || clientIp.isBlank() ? "unknown" : clientIp,
                 loginProperties.getIpMaxAttempts(), loginProperties.getIpWindowTtlSeconds());
@@ -112,6 +113,7 @@ public class AuthService {
                     deviceResult.retryAfterSeconds());
         }
 
+        // 账号锁定状态与按设备签发的一次性验证码共同限制连续猜测密码的尝试。
         LoginAttemptRedisRepository.FailureState state = loginAttemptRepository.getFailureState(username);
         if (state.failures() >= loginProperties.getFailLockThreshold()) {
             long retryAfter = Math.max(1, state.ttlSeconds());
@@ -126,6 +128,7 @@ public class AuthService {
             throw new AuthBusinessException("CAPTCHA_INVALID", "验证码错误或已过期，请刷新后重试");
         }
 
+        // 验证码校验成功后立即消费；账号或密码错误仍计入该账号的失败次数。
         User user = userRepository.findByNickName(username)
                 .orElse(null);
         if (user == null || !passwordEncoder.matches(request.password(), user.getPasswordHash())) {
@@ -146,6 +149,7 @@ public class AuthService {
         if (!passwordEncoder.matches(request.currentPassword(), user.getPasswordHash())) {
             throw new AuthBusinessException("INVALID_CURRENT_PASSWORD", "当前密码错误");
         }
+        // 更新密码哈希后，令牌中的凭据指纹不再匹配，旧登录令牌会自动失效。
         user.changePasswordHash(passwordEncoder.encode(request.newPassword()));
     }
 
@@ -173,7 +177,7 @@ public class AuthService {
 
     private static String normalizeDeviceId(String rawDeviceId) {
         String deviceId = rawDeviceId == null ? "" : rawDeviceId.trim().toLowerCase();
-        if ("unknown".equals(deviceId)) return deviceId; // compatibility for non-HTTP callers.
+        if ("unknown".equals(deviceId)) return deviceId; // 为非 HTTP 调用方保留兼容标识。
         if (!deviceId.matches("[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")) {
             throw new AuthBusinessException("INVALID_DEVICE_ID", "设备标识无效，请刷新页面后重试");
         }

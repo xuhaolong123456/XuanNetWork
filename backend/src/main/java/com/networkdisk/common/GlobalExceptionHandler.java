@@ -2,17 +2,23 @@ package com.networkdisk.common;
 
 import com.networkdisk.auth.AuthBusinessException;
 import com.networkdisk.file.FileBusinessException;
+import com.networkdisk.file.FileOperationError;
+import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.data.redis.RedisConnectionFailureException;
 
 @RestControllerAdvice
 /** 统一捕获 Controller 和 Service 抛出的业务异常，转换为 JSON 响应。 */
 public class GlobalExceptionHandler {
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
     /** 处理注册业务异常，例如邮箱重复或昵称重复。 */
     @ExceptionHandler(AuthBusinessException.class)
@@ -25,20 +31,46 @@ public class GlobalExceptionHandler {
     }
 
     @ExceptionHandler(FileBusinessException.class)
-    public ResponseEntity<Result<Void>> handleFileBusiness(FileBusinessException exception) {
-        HttpStatus status = "FILE_NOT_FOUND".equals(exception.getCode())
-                ? HttpStatus.NOT_FOUND : HttpStatus.BAD_REQUEST;
+    public ResponseEntity<?> handleFileBusiness(FileBusinessException exception, HttpServletRequest request) {
+        HttpStatus status = HttpStatus.valueOf(exception.getStatus());
+        if (FileOperationError.applies(request)) {
+            return ResponseEntity.status(status).body(FileOperationError.of(status.value(), exception.getMessage()));
+        }
         return ResponseEntity.status(status).body(Result.failure(exception.getCode(), exception.getMessage()));
+    }
+
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    public ResponseEntity<Result<Void>> handleUploadTooLarge(MaxUploadSizeExceededException exception) {
+        return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE)
+                .body(Result.failure("FILE_TOO_LARGE", "文件大小超过允许上限"));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
-    public Result<Void> handleValidation(MethodArgumentNotValidException exception) {
+    public Object handleValidation(MethodArgumentNotValidException exception, HttpServletRequest request) {
         String message = exception.getBindingResult().getFieldErrors().stream()
                 .findFirst()
                 .map(error -> error.getDefaultMessage())
-                .orElse("请检查注册信息");
+                .orElse("请求参数无效");
+        if (FileOperationError.applies(request)) return FileOperationError.of(400, message);
         return Result.failure("INVALID_PARAM", message);
+    }
+
+    @ExceptionHandler({HttpMessageNotReadableException.class, MethodArgumentTypeMismatchException.class})
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public Object handleMalformedRequest(Exception exception, HttpServletRequest request) {
+        return FileOperationError.applies(request) ? FileOperationError.of(400, "请求参数格式错误")
+                : Result.failure("INVALID_PARAM", "请求参数格式错误");
+    }
+
+    @ExceptionHandler(org.springframework.dao.DataAccessException.class)
+    public ResponseEntity<?> handleDatabaseFailure(org.springframework.dao.DataAccessException exception,
+                                                    HttpServletRequest request) {
+        // 记录详细故障，但不把数据库结构或连接信息暴露给前端。
+        log.error("数据库操作失败", exception);
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(FileOperationError.applies(request)
+                ? FileOperationError.of(500, "操作失败，请稍后重试")
+                : Result.failure("INTERNAL_ERROR", "操作失败，请稍后重试"));
     }
 
     /** Redis 运行中断开时，验证码接口明确返回 503，不回退到本地内存。 */

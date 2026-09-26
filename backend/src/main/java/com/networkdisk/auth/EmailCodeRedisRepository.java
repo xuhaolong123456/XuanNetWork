@@ -17,6 +17,7 @@ public class EmailCodeRedisRepository {
     private static final int MAX_IP_SENDS = 10;
     private static final int MAX_FAILURES = 3;
 
+    // Lua 脚本在 Redis 单线程中原子执行，保证限流检查与发送锁获取不会被并发请求穿插。
     private final StringRedisTemplate redis;
     private final DefaultRedisScript<Long> beginSendScript = longScript("""
             local ipCount = redis.call('INCR', KEYS[1])

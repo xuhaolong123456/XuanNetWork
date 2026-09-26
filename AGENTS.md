@@ -21,9 +21,11 @@ Run commands from the indicated directory:
 
 Follow the surrounding code. Use four spaces in Java and two spaces in Vue/JavaScript. Java types use `PascalCase`; methods, fields, and JavaScript functions use `camelCase`. Vue page components use descriptive `PascalCase.vue` names, such as `LoginView.vue`. Keep controllers focused on HTTP handling and place business rules in services. Use Jakarta validation on request DTOs and return the shared `Result` response shape. No formatter or linter is configured; keep imports tidy and avoid unrelated formatting changes.
 
+修改代码时，新增或改写的注释必须使用中文；遇到已有的非中文代码注释时，应一并改为中文。对认证、安全校验、数据归属、并发控制等关键逻辑，应补充简洁注释，说明处理目的和重要约束，避免逐行解释显而易见的代码。
+
 ## Testing Guidelines
 
-Use JUnit 5 and Spring Boot Test. Name test classes `*Test` and group them by package or feature, matching `com.networkdisk.auth` and `com.networkdisk.config`. Add regression coverage for changed authentication behavior, especially token cookies, CSRF checks, and authorization failures. Run `mvn test` before submitting backend changes; run `npm run build` for frontend changes.
+Use JUnit 5 and Spring Boot Test. Name test classes `*Test` and group them by package or feature, matching `com.networkdisk.auth` and `com.networkdisk.config`. Every code change must include or update unit tests and regression tests for the changed behavior; cover authorization, validation, error handling, and key edge cases where relevant. Run `mvn test` before submitting backend changes; run `npm run build` for frontend changes.
 
 ## Commits and Pull Requests
 

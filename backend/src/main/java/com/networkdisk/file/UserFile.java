@@ -19,7 +19,9 @@ import java.time.LocalDateTime;
 
 @Entity
 @Table(name = "user_file", indexes = {
-        @Index(name = "idx_user_file_owner_parent_id", columnList = "user_id,parent_id,id")
+        @Index(name = "idx_user_file_owner_parent_id", columnList = "user_id,parent_id,id"),
+        @Index(name = "idx_user_file_owner_parent_name", columnList = "user_id,parent_id,name"),
+        @Index(name = "idx_user_file_owner_deleted", columnList = "user_id,is_delete,delete_at,id")
 })
 public class UserFile {
     @Id
@@ -47,11 +49,24 @@ public class UserFile {
     @Column(name = "mime_type", length = 255)
     private String mimeType;
 
+    @Column(name = "storage_key", length = 512)
+    private String storageKey;
+
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
 
     @Column(name = "updated_at", nullable = false)
     private LocalDateTime updatedAt;
+
+    @Column(name = "is_delete", nullable = false, columnDefinition = "boolean default false")
+    private boolean deleted;
+
+    @Column(name = "delete_at")
+    private LocalDateTime deletedAt;
+
+    // 同一次删除的子树共享批次，恢复时不带回此前单独删除的内容。
+    @Column(name = "delete_batch", length = 36)
+    private String deleteBatch;
 
     protected UserFile() {
     }
@@ -62,12 +77,18 @@ public class UserFile {
 
     public UserFile(User owner, UserFile parent, String name, FileNodeType nodeType,
                     long sizeBytes, String mimeType) {
+        this(owner, parent, name, nodeType, sizeBytes, mimeType, null);
+    }
+
+    public UserFile(User owner, UserFile parent, String name, FileNodeType nodeType,
+                    long sizeBytes, String mimeType, String storageKey) {
         this.owner = owner;
         this.parent = parent;
         this.name = name;
         this.nodeType = nodeType;
         this.sizeBytes = sizeBytes;
         this.mimeType = mimeType;
+        this.storageKey = storageKey;
         this.createdAt = LocalDateTime.now();
         this.updatedAt = this.createdAt;
     }
@@ -91,5 +112,12 @@ public class UserFile {
     public FileNodeType getNodeType() { return nodeType; }
     public long getSizeBytes() { return sizeBytes; }
     public String getMimeType() { return mimeType; }
+    public String getStorageKey() { return storageKey; }
     public LocalDateTime getUpdatedAt() { return updatedAt; }
+    public boolean isDeleted() { return deleted; }
+    public LocalDateTime getDeletedAt() { return deletedAt; }
+
+    public void rename(String name) {
+        this.name = name;
+    }
 }

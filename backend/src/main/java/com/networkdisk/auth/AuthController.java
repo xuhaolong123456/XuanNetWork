@@ -63,7 +63,7 @@ public class AuthController {
                                               @RequestHeader("X-Device-Id") String deviceId,
                                               HttpServletResponse response) {
         LoginResponse login = authService.login(request, clientIp(servletRequest), deviceId);
-        // Put the JWT only in the HttpOnly cookie; never serialize it in the JSON response.
+        // JWT 只写入 HttpOnly Cookie，绝不序列化到 JSON 响应中。
         AuthCookie.set(response, login.accessToken(), authService.tokenTtlSeconds(), authCookieSecure);
         return Result.success(new LoginSessionResponse(login.userId(), login.username()));
     }
@@ -84,7 +84,7 @@ public class AuthController {
         return Result.success(authService.issueCaptcha(username, deviceId));
     }
 
-    /** Materializes Spring Security's CSRF token and returns it so the frontend can echo it in unsafe requests. */
+    /** 生成 Spring Security 的 CSRF 令牌并返回给前端，以便前端在非安全请求中回传。 */
     @GetMapping("/csrf")
     public Result<String> csrf(CsrfToken csrfToken) {
         return Result.success(csrfToken.getToken());

@@ -8,7 +8,7 @@ import java.util.HexFormat;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Repository;
 
-/** Redis allowlist: deleting one key revokes that token immediately. */
+/** Redis 活跃令牌白名单；删除对应键即可立即撤销单个令牌。 */
 @Repository
 public class ActiveTokenRepository {
     private final StringRedisTemplate redis;

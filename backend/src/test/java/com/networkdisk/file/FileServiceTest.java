@@ -6,19 +6,29 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.networkdisk.auth.User;
+import com.networkdisk.auth.UserRepository;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.util.ReflectionTestUtils;
 
 class FileServiceTest {
     private final UserFileRepository files = mock(UserFileRepository.class);
-    private final FileService service = new FileService(files);
+    private final UserRepository users = mock(UserRepository.class);
+    private final FileStorageService storage = mock(FileStorageService.class);
+    private final FileService service = new FileService(files, users, storage);
+    @org.junit.jupiter.api.BeforeEach
+    void ownerLock() {
+        when(users.findByIdForUpdate(7L)).thenReturn(Optional.of(new User("owner@example.com", "owner", "hash")));
+    }
 
     @Test
     void listsOnlyRootChildrenForTheAuthenticatedOwner() {
@@ -83,4 +93,244 @@ class FileServiceTest {
                 .extracting("code").isEqualTo("INVALID_PARAM");
         verify(files, never()).findByOwner_IdAndParentIsNull(eq(7L), any(PageRequest.class));
     }
+
+    @Test
+    void createsDirectoryForAuthenticatedOwnerWithinOwnedParent() {
+        User owner = new User("owner@example.com", "owner", "hash");
+        UserFile parent = new UserFile(owner, null, "Documents", FileNodeType.DIRECTORY);
+        ReflectionTestUtils.setField(parent, "id", 8L);
+        when(files.findByIdAndOwner_IdForUpdate(8L, 7L)).thenReturn(Optional.of(parent));
+        when(files.existsByOwner_IdAndParent_IdAndName(7L, 8L, "Drafts")).thenReturn(false);
+        when(users.findByIdForUpdate(7L)).thenReturn(Optional.of(owner));
+        when(files.save(any(UserFile.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        FileItemResponse result = service.createDirectory(7L, 8L, " Drafts ");
+
+        assertThat(result.name()).isEqualTo("Drafts");
+        assertThat(result.type()).isEqualTo(FileNodeType.DIRECTORY);
+        verify(files).findByIdAndOwner_IdForUpdate(8L, 7L);
+        verify(files).existsByOwner_IdAndParent_IdAndName(7L, 8L, "Drafts");
+    }
+
+    @Test
+    void automaticallyNumbersDuplicateDirectoryNamesInTheSameParent() {
+        User owner = new User("owner@example.com", "owner", "hash");
+        when(users.findByIdForUpdate(7L)).thenReturn(Optional.of(owner));
+        when(files.existsByOwner_IdAndParentIsNullAndName(7L, "Reports")).thenReturn(true);
+        when(files.existsByOwner_IdAndParentIsNullAndName(7L, "Reports（1）")).thenReturn(true);
+        when(files.existsByOwner_IdAndParentIsNullAndName(7L, "Reports（2）")).thenReturn(false);
+        when(files.save(any(UserFile.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.createDirectory(7L, null, "../private"))
+                .isInstanceOf(FileBusinessException.class).extracting("code").isEqualTo("INVALID_PARAM");
+
+        FileItemResponse result = service.createDirectory(7L, null, "Reports");
+
+        assertThat(result.name()).isEqualTo("Reports（2）");
+        assertThat(result.type()).isEqualTo(FileNodeType.DIRECTORY);
+        verify(users).findByIdForUpdate(7L);
+        verify(files).existsByOwner_IdAndParentIsNullAndName(7L, "Reports（2）");
+        verify(files).save(any(UserFile.class));
+    }
+
+    @Test
+    void rejectsRenamingDirectoryToAnotherNodesNameInTheSameParent() {
+        User owner = new User("owner@example.com", "owner", "hash");
+        UserFile directory = new UserFile(owner, null, "Old name", FileNodeType.DIRECTORY);
+        ReflectionTestUtils.setField(directory, "id", 21L);
+        when(files.findByIdAndOwner_IdForUpdate(21L, 7L)).thenReturn(Optional.of(directory));
+        when(users.findByIdForUpdate(7L)).thenReturn(Optional.of(owner));
+        when(files.existsByOwner_IdAndParentIsNullAndNameAndIdNot(7L, "Reports", 21L)).thenReturn(true);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.renameDirectory(7L, 21L, "Reports"))
+                .isInstanceOf(FileBusinessException.class)
+                .satisfies(error -> {
+                    FileBusinessException conflict = (FileBusinessException) error;
+                    assertThat(conflict.getStatus()).isEqualTo(409);
+                    assertThat(conflict.getCode()).isEqualTo("NAME_CONFLICT");
+                });
+    }
+
+    @Test
+    void renamingDirectoryToItsCurrentNameSucceedsWithoutConflictCheck() {
+        User owner = new User("owner@example.com", "owner", "hash");
+        UserFile directory = new UserFile(owner, null, "Reports", FileNodeType.DIRECTORY);
+        ReflectionTestUtils.setField(directory, "id", 21L);
+        when(files.findByIdAndOwner_IdForUpdate(21L, 7L)).thenReturn(Optional.of(directory));
+        when(users.findByIdForUpdate(7L)).thenReturn(Optional.of(owner));
+
+        FileItemResponse result = service.renameDirectory(7L, 21L, "Reports");
+
+        assertThat(result.name()).isEqualTo("Reports");
+        verify(files, never()).existsByOwner_IdAndParentIsNullAndNameAndIdNot(7L, "Reports", 21L);
+    }
+
+    @Test
+    void uploadsContentAndPersistsItsMetadataForTheAuthenticatedOwner() {
+        User owner = new User("owner@example.com", "owner", "hash");
+        when(users.findByIdForUpdate(7L)).thenReturn(Optional.of(owner));
+        when(storage.store(eq(7L), any())).thenReturn(
+                new FileStorageService.StoredFile("7/abc", "notes.txt", 5, "text/plain"));
+        when(files.save(any(UserFile.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        MockMultipartFile upload = new MockMultipartFile("file", "notes.txt", "text/plain",
+                "hello".getBytes(StandardCharsets.UTF_8));
+
+        FileItemResponse result = service.upload(7L, null, upload);
+
+        assertThat(result.name()).isEqualTo("notes.txt");
+        assertThat(result.type()).isEqualTo(FileNodeType.FILE);
+        assertThat(result.sizeBytes()).isEqualTo(5);
+        org.mockito.ArgumentCaptor<UserFile> saved = org.mockito.ArgumentCaptor.forClass(UserFile.class);
+        verify(files).save(saved.capture());
+        assertThat(saved.getValue().getOwner()).isSameAs(owner);
+        assertThat(saved.getValue().getStorageKey()).isEqualTo("7/abc");
+    }
+
+    @Test
+    void uploadsFileIntoOwnedNestedDirectorySetsParent() {
+        User owner = new User("owner@example.com", "owner", "hash");
+        UserFile directory = new UserFile(owner, null, "Documents", FileNodeType.DIRECTORY);
+        ReflectionTestUtils.setField(directory, "id", 8L);
+        when(files.findByIdAndOwner_IdForUpdate(8L, 7L)).thenReturn(Optional.of(directory));
+        when(users.findByIdForUpdate(7L)).thenReturn(Optional.of(owner));
+        when(storage.store(eq(7L), any())).thenReturn(
+                new FileStorageService.StoredFile("7/abc", "notes.txt", 5, "text/plain"));
+        when(files.save(any(UserFile.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        MockMultipartFile upload = new MockMultipartFile("file", "notes.txt", "text/plain",
+                "hello".getBytes(StandardCharsets.UTF_8));
+
+        FileItemResponse result = service.upload(7L, 8L, upload);
+
+        assertThat(result.name()).isEqualTo("notes.txt");
+        assertThat(result.type()).isEqualTo(FileNodeType.FILE);
+        org.mockito.ArgumentCaptor<UserFile> saved = org.mockito.ArgumentCaptor.forClass(UserFile.class);
+        verify(files).save(saved.capture());
+        assertThat(saved.getValue().getParent()).isSameAs(directory);
+        assertThat(saved.getValue().getOwner()).isSameAs(owner);
+    }
+
+    @Test
+    void doesNotStoreUploadWhenParentDirectoryIsNotOwned() {
+        when(files.findByIdAndOwner_IdForUpdate(99L, 7L)).thenReturn(Optional.empty());
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.upload(7L, 99L,
+                new MockMultipartFile("file", "notes.txt", "text/plain", new byte[] {1})))
+                .isInstanceOf(FileBusinessException.class).extracting("code").isEqualTo("FILE_NOT_FOUND");
+        verifyNoInteractions(storage);
+    }
+
+    @Test
+    void removesStoredBytesWhenMetadataPersistenceFails() {
+        User owner = new User("owner@example.com", "owner", "hash");
+        when(users.findByIdForUpdate(7L)).thenReturn(Optional.of(owner));
+        when(storage.store(eq(7L), any())).thenReturn(
+                new FileStorageService.StoredFile("7/abc", "notes.txt", 1, "text/plain"));
+        when(files.save(any(UserFile.class))).thenThrow(new IllegalStateException("database unavailable"));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.upload(7L, null,
+                new MockMultipartFile("file", "notes.txt", "text/plain", new byte[] {1})))
+                .isInstanceOf(IllegalStateException.class);
+        verify(storage).delete("7/abc");
+    }
+
+    @Test
+    void createsDirectoryInRootForAuthenticatedOwner() {
+        User owner = new User("owner@example.com", "owner", "hash");
+        when(users.findByIdForUpdate(7L)).thenReturn(Optional.of(owner));
+        when(files.existsByOwner_IdAndParentIsNullAndName(7L, "Travel")).thenReturn(false);
+        when(files.save(any(UserFile.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        FileItemResponse result = service.createDirectory(7L, null, " Travel ");
+
+        assertThat(result.name()).isEqualTo("Travel");
+        assertThat(result.type()).isEqualTo(FileNodeType.DIRECTORY);
+        org.mockito.ArgumentCaptor<UserFile> saved = org.mockito.ArgumentCaptor.forClass(UserFile.class);
+        verify(files).save(saved.capture());
+        assertThat(saved.getValue().getParent()).isNull();
+        assertThat(saved.getValue().getOwner()).isSameAs(owner);
+        verify(users).findByIdForUpdate(7L);
+    }
+
+    @Test
+    void rejectsBlankDirectoryName() {
+        for (String blank : List.of("", "   ", "\t\n")) {
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.createDirectory(7L, null, blank))
+                    .isInstanceOf(FileBusinessException.class)
+                    .extracting("code").isEqualTo("INVALID_PARAM");
+        }
+    }
+
+    @Test
+    void rejectsDirectoryNameOver255Characters() {
+        String overlong = "a".repeat(256);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.createDirectory(7L, null, overlong))
+                .isInstanceOf(FileBusinessException.class)
+                .extracting("code").isEqualTo("INVALID_PARAM");
+    }
+
+    @Test
+    void rejectsDirectoryNamesWithIllegalCharacters() {
+        for (String illegal : List.of("a/b", "a<b", "a:b", "a\"b", "a\\b", "a|b", "a?b", "a*b", "ab")) {
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.createDirectory(7L, null, illegal))
+                    .isInstanceOf(FileBusinessException.class)
+                    .extracting("code").isEqualTo("INVALID_PARAM");
+        }
+    }
+
+    @Test
+    void rejectsCreateInNonexistentParentDirectory() {
+        when(files.findByIdAndOwner_IdForUpdate(999L, 7L)).thenReturn(Optional.empty());
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.createDirectory(7L, 999L, "Travel"))
+                .isInstanceOf(FileBusinessException.class)
+                .extracting("code").isEqualTo("FILE_NOT_FOUND");
+    }
+
+    @Test
+    void rejectsCreateInAnotherOwnersDirectory() {
+        User other = new User("other@example.com", "other", "hash");
+        UserFile directory = new UserFile(other, null, "Private", FileNodeType.DIRECTORY);
+        ReflectionTestUtils.setField(directory, "id", 8L);
+        // 目录存在但属于 other，而非当前用户 7，因此 findByIdAndOwner_IdForUpdate 查不到。
+        when(files.findByIdAndOwner_IdForUpdate(8L, 7L)).thenReturn(Optional.empty());
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.createDirectory(7L, 8L, "Travel"))
+                .isInstanceOf(FileBusinessException.class)
+                .extracting("code").isEqualTo("FILE_NOT_FOUND");
+    }
+
+    @Test
+    void rejectsCreateWhenParentIsFileNotDirectory() {
+        User owner = new User("owner@example.com", "owner", "hash");
+        UserFile file = new UserFile(owner, null, "notes.txt", FileNodeType.FILE);
+        ReflectionTestUtils.setField(file, "id", 8L);
+        when(files.findByIdAndOwner_IdForUpdate(8L, 7L)).thenReturn(Optional.of(file));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.createDirectory(7L, 8L, "Travel"))
+                .isInstanceOf(FileBusinessException.class)
+                .extracting("code").isEqualTo("FILE_NOT_FOUND");
+    }
+
+    @Test
+    void autoNumbersDuplicateDirectoryNameAgainstExistingFileInSameParent() {
+        User owner = new User("owner@example.com", "owner", "hash");
+        when(users.findByIdForUpdate(7L)).thenReturn(Optional.of(owner));
+        when(files.existsByOwner_IdAndParentIsNullAndName(7L, "Report")).thenReturn(true);
+        when(files.existsByOwner_IdAndParentIsNullAndName(7L, "Report（1）")).thenReturn(false);
+        when(files.save(any(UserFile.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        FileItemResponse result = service.createDirectory(7L, null, "Report");
+
+        assertThat(result.name()).isEqualTo("Report（1）");
+        assertThat(result.type()).isEqualTo(FileNodeType.DIRECTORY);
+    }
+
+    @Test
+    void insertsFullWidthNumberBeforeFileExtensionWhenResolvingDuplicate() {
+        assertThat(FileService.withNumberSuffix("report.pdf", 1, true)).isEqualTo("report（1）.pdf");
+        assertThat(FileService.withNumberSuffix("archive.tar.gz", 1, true))
+                .isEqualTo("archive.tar（1）.gz");
+        assertThat(FileService.withNumberSuffix("无扩展名", 2, true)).isEqualTo("无扩展名（2）");
+        assertThat(FileService.withNumberSuffix("旅行", 1, false)).isEqualTo("旅行（1）");
+    }
+
 }

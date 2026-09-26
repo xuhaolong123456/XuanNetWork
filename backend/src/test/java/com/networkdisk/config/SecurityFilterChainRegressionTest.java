@@ -8,6 +8,9 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -25,10 +28,14 @@ import com.networkdisk.auth.TokenService;
 import com.networkdisk.auth.User;
 import com.networkdisk.auth.UserRepository;
 import com.networkdisk.file.FileBreadcrumb;
+import com.networkdisk.file.FileBusinessException;
 import com.networkdisk.file.FileController;
+import com.networkdisk.file.FileItemResponse;
 import com.networkdisk.file.FileListResponse;
+import com.networkdisk.file.FileNodeType;
 import com.networkdisk.file.FilePageResponse;
 import com.networkdisk.file.FileService;
+import com.networkdisk.file.FileTrashService;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.HashSet;
@@ -46,6 +53,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.data.redis.RedisConnectionFailureException;
 import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockCookie;
+import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.security.core.Authentication;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
@@ -67,6 +75,7 @@ class SecurityFilterChainRegressionTest {
     @Autowired private UserRepository users;
     @Autowired private AuthService authService;
     @Autowired private FileService fileService;
+    @Autowired private FileTrashService trashService;
 
     private final AtomicBoolean active = new AtomicBoolean(true);
     private final AtomicReference<User> user = new AtomicReference<>();
@@ -140,6 +149,151 @@ class SecurityFilterChainRegressionTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.breadcrumbs[0].name").value("我的文件"));
         verify(fileService).list(42L, 13L, 0, 50);
+    }
+
+    @Test
+    void directoryCreationRequiresAuthenticationAndCsrfAndUsesPrincipalAsOwner() throws Exception {
+        String token = tokens.create(42L, "hash-one");
+        mvc.perform(post("/api/v1/files/directories").with(csrfRequest(null))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"parentId\":null,\"folderName\":\"Reports\"}"))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(post("/api/v1/files/directories").cookie(new MockCookie(AuthCookie.NAME, token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"parentId\":null,\"folderName\":\"Reports\"}"))
+                .andExpect(status().isForbidden());
+
+        when(fileService.createDirectory(42L, 13L, "Reports"))
+                .thenReturn(new FileItemResponse(21L, "Reports", FileNodeType.DIRECTORY, 0, null, null));
+        mvc.perform(post("/api/v1/files/directories").with(csrfRequest(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"parentId\":13,\"folderName\":\"Reports\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.name").value("Reports"))
+                .andExpect(jsonPath("$.data.type").value("DIRECTORY"));
+        verify(fileService).createDirectory(42L, 13L, "Reports");
+    }
+
+    @Test
+    void directoryCreationRejectsBlankAndOverlongNamesWithInvalidParam() throws Exception {
+        String token = tokens.create(42L, "hash-one");
+        mvc.perform(post("/api/v1/files/directories").with(csrfRequest(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"parentId\":null,\"folderName\":\"   \"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_PARAM"));
+
+        mvc.perform(post("/api/v1/files/directories").with(csrfRequest(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"parentId\":null,\"folderName\":\"" + "a".repeat(256) + "\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_PARAM"));
+    }
+
+    @Test
+    void directoryCreationReturnsNotFoundWhenParentIsForeign() throws Exception {
+        String token = tokens.create(42L, "hash-one");
+        when(fileService.createDirectory(eq(42L), eq(999L), eq("Reports")))
+                .thenThrow(new FileBusinessException("FILE_NOT_FOUND", "Directory not found", 404));
+
+        mvc.perform(post("/api/v1/files/directories").with(csrfRequest(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"parentId\":999,\"folderName\":\"Reports\"}"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("FILE_NOT_FOUND"));
+    }
+
+    @Test
+    void directoryRenameAndDeleteRequireAuthenticationAndCsrf() throws Exception {
+        String token = tokens.create(42L, "hash-one");
+        mvc.perform(patch("/api/v1/files/directories/13").with(csrfRequest(null))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"folderName\":\"Archive\"}"))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(patch("/api/v1/files/directories/13").cookie(new MockCookie(AuthCookie.NAME, token))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"folderName\":\"Archive\"}"))
+                .andExpect(status().isForbidden());
+        when(fileService.renameDirectory(42L, 13L, "Archive"))
+                .thenReturn(new FileItemResponse(13L, "Archive", FileNodeType.DIRECTORY, 0, null, null));
+        mvc.perform(patch("/api/v1/files/directories/13").with(csrfRequest(token))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"folderName\":\"Archive\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.name").value("Archive"));
+        verify(fileService).renameDirectory(42L, 13L, "Archive");
+
+        mvc.perform(delete("/api/v1/files/directories/13").with(csrfRequest(null)))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(delete("/api/v1/files/directories/13").cookie(new MockCookie(AuthCookie.NAME, token)))
+                .andExpect(status().isForbidden());
+        mvc.perform(delete("/api/v1/files/directories/13").with(csrfRequest(token)))
+                .andExpect(status().isNoContent());
+        verify(trashService).delete(42L, java.util.List.of(13L));
+    }
+
+    @Test
+    void trashEndpointsRequireAuthenticationCsrfAndValidIds() throws Exception {
+        var put = org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/api/v1/files/files");
+        mvc.perform(put.contentType(MediaType.APPLICATION_JSON).content("{\"ids\":[13]}"))
+                .andExpect(status().isUnauthorized()).andExpect(jsonPath("$.code").value(401));
+        String token = tokens.create(42L, "hash-one");
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/api/v1/files/files")
+                        .cookie(new MockCookie(AuthCookie.NAME, token))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"ids\":[13]}"))
+                .andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value(403));
+        for (String body : java.util.List.of("{\"ids\":[]}", "{\"ids\":[null]}", "{\"ids\":[0]}", "{")) {
+            mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/api/v1/files/files")
+                            .with(csrfRequest(token)).contentType(MediaType.APPLICATION_JSON).content(body))
+                    .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value(400));
+        }
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/api/v1/files/files")
+                        .with(csrfRequest(token)).contentType(MediaType.APPLICATION_JSON).content("{\"ids\":[13,14]}"))
+                .andExpect(status().isNoContent()).andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.content().string(""));
+        verify(trashService).delete(42L, java.util.List.of(13L, 14L));
+    }
+
+    @Test
+    void trashErrorsAndRecoveryUseTheDocumentedContract() throws Exception {
+        String token = tokens.create(42L, "hash-one");
+        for (int code : java.util.List.of(403, 404)) {
+            org.mockito.Mockito.doThrow(new FileBusinessException("FAIL", "无法删除", code))
+                    .when(trashService).delete(42L, java.util.List.of((long) code));
+            mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/api/v1/files/file/" + code)
+                            .with(csrfRequest(token)))
+                    .andExpect(status().is(code)).andExpect(jsonPath("$.code").value(code))
+                    .andExpect(jsonPath("$.msg").value("无法删除"));
+        }
+        org.mockito.Mockito.doThrow(new org.springframework.dao.DataAccessResourceFailureException("database offline"))
+                .when(trashService).delete(42L, java.util.List.of(500L));
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/api/v1/files/file/500")
+                        .with(csrfRequest(token)))
+                .andExpect(status().isInternalServerError()).andExpect(jsonPath("$.code").value(500))
+                .andExpect(jsonPath("$.msg").value("操作失败，请稍后重试"));
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/api/v1/files/recover/13")
+                        .with(csrfRequest(token))).andExpect(status().isNoContent());
+        verify(trashService).restore(42L, java.util.List.of(13L));
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/api/v1/files/recover/batch")
+                        .with(csrfRequest(token)).contentType(MediaType.APPLICATION_JSON).content("{\"ids\":[13,14]}"))
+                .andExpect(status().isNoContent());
+        verify(trashService).restore(42L, java.util.List.of(13L, 14L));
+        when(trashService.list(42L, 0, 50)).thenReturn(new com.networkdisk.file.TrashListResponse(
+                java.util.List.of(), new FilePageResponse(0, 50, 0, 0)));
+        mvc.perform(get("/api/v1/files/recycle-bin").cookie(new MockCookie(AuthCookie.NAME, token)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.success").value(true));
+    }
+
+    @Test
+    void fileUploadRequiresAuthenticationAndUsesPrincipalAsOwner() throws Exception {
+        MockMultipartFile file = new MockMultipartFile("file", "notes.txt", "text/plain", "hello".getBytes());
+        mvc.perform(multipart("/api/v1/files/upload").file(file).with(csrfRequest(null)))
+                .andExpect(status().isUnauthorized());
+
+        String token = tokens.create(42L, "hash-one");
+        when(fileService.upload(eq(42L), eq(13L), any()))
+                .thenReturn(new FileItemResponse(22L, "notes.txt", FileNodeType.FILE, 5, "text/plain", null));
+        mvc.perform(multipart("/api/v1/files/upload").file(file).with(csrfRequest(token)).param("parentId", "13"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.name").value("notes.txt"))
+                .andExpect(jsonPath("$.data.sizeBytes").value(5));
+        verify(fileService).upload(eq(42L), eq(13L), any());
     }
 
     @Test
@@ -286,6 +440,8 @@ class SecurityFilterChainRegressionTest {
 
         @Bean
         FileService fileService() { return mock(FileService.class); }
+        @Bean
+        FileTrashService trashService() { return mock(FileTrashService.class); }
     }
 
     @RestController
