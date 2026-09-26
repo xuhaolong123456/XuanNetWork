@@ -39,8 +39,21 @@ public class LoginAttemptRedisRepository {
     }
 
     public IpAttemptResult beginIpAttempt(String ip, int maxAttempts, int ttlSeconds) {
+        return beginAttempt(ipKey(ip), maxAttempts, ttlSeconds);
+    }
+
+    /**
+     * Counts every login request for one client device.  This is deliberately
+     * independent of the account name so that a credential-stuffing client
+     * cannot bypass the limit by rotating usernames.
+     */
+    public IpAttemptResult beginDeviceAttempt(String deviceId, int maxAttempts, int ttlSeconds) {
+        return beginAttempt(deviceKey(deviceId), maxAttempts, ttlSeconds);
+    }
+
+    private IpAttemptResult beginAttempt(String key, int maxAttempts, int ttlSeconds) {
         if (redis == null) return new IpAttemptResult(false, ttlSeconds);
-        List<?> result = redis.execute(incrementScript, List.of(ipKey(ip)), String.valueOf(ttlSeconds));
+        List<?> result = redis.execute(incrementScript, List.of(key), String.valueOf(ttlSeconds));
         if (result == null || result.size() < 2) return new IpAttemptResult(false, ttlSeconds);
         long count = number(result.get(0));
         long ttl = Math.max(1, number(result.get(1)));
@@ -65,18 +78,20 @@ public class LoginAttemptRedisRepository {
         if (redis != null) redis.delete(failureKey(username));
     }
 
-    public void saveCaptcha(String username, String code, int ttlSeconds) {
-        if (redis != null) redis.opsForValue().set(captchaKey(username), code, java.time.Duration.ofSeconds(ttlSeconds));
+    public void saveCaptcha(String username, String deviceId, String code, int ttlSeconds) {
+        if (redis != null) redis.opsForValue().set(captchaKey(username, deviceId), code,
+                java.time.Duration.ofSeconds(ttlSeconds));
     }
 
-    public boolean verifyAndConsumeCaptcha(String username, String code) {
+    public boolean verifyAndConsumeCaptcha(String username, String deviceId, String code) {
         if (redis == null) return false;
-        List<?> result = redis.execute(captchaVerifyScript, List.of(captchaKey(username)), code == null ? "" : code.trim());
+        List<?> result = redis.execute(captchaVerifyScript, List.of(captchaKey(username, deviceId)),
+                code == null ? "" : code.trim());
         return result != null && !result.isEmpty() && number(result.get(0)) == 1;
     }
 
-    public void clearCaptcha(String username) {
-        if (redis != null) redis.delete(captchaKey(username));
+    public void clearCaptcha(String username, String deviceId) {
+        if (redis != null) redis.delete(captchaKey(username, deviceId));
     }
 
     private static long number(Object value) {
@@ -91,8 +106,11 @@ public class LoginAttemptRedisRepository {
     }
 
     private static String failureKey(String username) { return "login:fail:" + username; }
-    private static String captchaKey(String username) { return "login:captcha:" + username; }
+    private static String captchaKey(String username, String deviceId) {
+        return "login:captcha:" + username + ':' + deviceId;
+    }
     private static String ipKey(String ip) { return "login:ip:" + ip; }
+    private static String deviceKey(String deviceId) { return "login:device:" + deviceId; }
 
     public record IpAttemptResult(boolean limited, long retryAfterSeconds) {}
     public record FailureState(long failures, long ttlSeconds) {}

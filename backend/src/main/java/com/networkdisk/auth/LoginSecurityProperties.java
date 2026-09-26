@@ -7,15 +7,14 @@ import org.springframework.stereotype.Component;
 @Component
 @ConfigurationProperties(prefix = "app.login")
 public class LoginSecurityProperties {
-    private int failCaptchaThreshold = 3;
     private int failLockThreshold = 5;
     private int failWindowTtlSeconds = 900;
     private int ipMaxAttempts = 10;
     private int ipWindowTtlSeconds = 60;
+    private int deviceMaxAttempts = 10;
+    private int deviceWindowTtlSeconds = 300;
     private int captchaTtlSeconds = 300;
 
-    public int getFailCaptchaThreshold() { return failCaptchaThreshold; }
-    public void setFailCaptchaThreshold(int value) { this.failCaptchaThreshold = value; }
     public int getFailLockThreshold() { return failLockThreshold; }
     public void setFailLockThreshold(int value) { this.failLockThreshold = value; }
     public int getFailWindowTtlSeconds() { return failWindowTtlSeconds; }
@@ -24,6 +23,10 @@ public class LoginSecurityProperties {
     public void setIpMaxAttempts(int value) { this.ipMaxAttempts = value; }
     public int getIpWindowTtlSeconds() { return ipWindowTtlSeconds; }
     public void setIpWindowTtlSeconds(int value) { this.ipWindowTtlSeconds = value; }
+    public int getDeviceMaxAttempts() { return deviceMaxAttempts; }
+    public void setDeviceMaxAttempts(int value) { this.deviceMaxAttempts = value; }
+    public int getDeviceWindowTtlSeconds() { return deviceWindowTtlSeconds; }
+    public void setDeviceWindowTtlSeconds(int value) { this.deviceWindowTtlSeconds = value; }
     public int getCaptchaTtlSeconds() { return captchaTtlSeconds; }
     public void setCaptchaTtlSeconds(int value) { this.captchaTtlSeconds = value; }
 }

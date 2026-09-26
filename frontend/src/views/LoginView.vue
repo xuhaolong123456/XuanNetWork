@@ -10,7 +10,7 @@
       <span v-if="errors.username" class="field-error">{{ errors.username }}</span>
       <label>密码<input v-model="password" type="password" autocomplete="current-password" placeholder="请输入密码" /></label>
       <span v-if="errors.password" class="field-error">{{ errors.password }}</span>
-      <div v-if="captchaRequired" class="captcha-section">
+      <div class="captcha-section">
         <label>图片验证码
           <div class="captcha-row">
             <input v-model.trim="captchaCode" inputmode="numeric" maxlength="4" placeholder="请输入4位数字" />
@@ -32,13 +32,14 @@
 
 <script setup>
 import { onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { getCaptcha, login } from '../api/auth'
 
+const router = useRouter()
 const username = ref('')
 const password = ref('')
 const captchaCode = ref('')
 const captchaImage = ref('')
-const captchaRequired = ref(false)
 const captchaLoading = ref(false)
 const lockedSeconds = ref(0)
 const message = ref('')
@@ -84,37 +85,32 @@ async function submit() {
   else if (username.value.length < 3 || username.value.length > 32) errors.username = '用户名长度为3-32位'
   if (!password.value) errors.password = '请输入密码'
   else if (password.value.length < 6 || password.value.length > 64) errors.password = '密码长度为6-64位'
-  if (errors.username || errors.password || submitting.value) return
+  if (!/^\d{4}$/.test(captchaCode.value)) message.value = '请输入图片中的4位验证码'
+  if (errors.username || errors.password || !/^\d{4}$/.test(captchaCode.value) || submitting.value) return
 
   submitting.value = true
   try {
-    const data = await login({
-      username: username.value,
-      password: password.value,
-      ...(captchaRequired.value ? { captchaCode: captchaCode.value } : {})
-    })
-    localStorage.setItem('access_token', data.accessToken)
+    const data = await login({ username: username.value, password: password.value, captchaCode: captchaCode.value })
     localStorage.setItem('current_user', JSON.stringify({ userId: data.userId, username: data.username }))
-    messageType.value = 'success'
-    message.value = '登录成功'
+    password.value = ''
+    await router.push('/drive')
   } catch (error) {
     messageType.value = 'error'
     if (error.code === 'CAPTCHA_REQUIRED') {
-      captchaRequired.value = true
       message.value = '请先完成图片验证码'
       await refreshCaptcha()
     } else if (error.code === 'CAPTCHA_INVALID') {
-      captchaRequired.value = true
-      message.value = '验证码错误，请刷新后重试'
+      message.value = '验证码错误或已过期，请刷新后重试'
       await refreshCaptcha()
     } else if (error.code === 'ACCOUNT_LOCKED') {
       startLockCountdown(error.retryAfter)
       message.value = ''
-    } else if (error.code === 'IP_RATE_LIMITED') {
-      message.value = '请求过于频繁，请稍后重试'
-    } else {
+    } else if (error.code === 'IP_RATE_LIMITED') message.value = '请求过于频繁，请稍后重试'
+    else if (error.code === 'DEVICE_RATE_LIMITED') message.value = '当前设备登录请求过于频繁，请稍后重试'
+    else if (error.code === 'LOGIN_FAILED') {
       message.value = error.message
-    }
+      await refreshCaptcha()
+    } else message.value = error.message
   } finally {
     submitting.value = false
   }

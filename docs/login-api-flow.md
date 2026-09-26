@@ -11,37 +11,30 @@
 - MySQL 用户表和 BCrypt 密码加密能力
 - 统一接口响应结构 `Result`
 
-当前工程尚未具备：
-
-- 登录状态校验
-- 登出接口
+当前工程已具备登录状态校验、Redis 令牌撤销和登出接口。认证 JWT 通过 HttpOnly Cookie 传递，浏览器 POST 请求使用 CSRF token。
 
 ## 2. 登录业务流程
 
 ```text
 用户打开 /login
         ↓
-填写用户名和密码
+前端获取 CSRF token 和绑定用户名/设备的图片验证码
         ↓
-前端校验必填项和格式
+POST /api/v1/auth/login（X-Device-Id、X-XSRF-TOKEN、验证码）
         ↓
-POST /api/v1/auth/login
+AuthController 调用 AuthService
         ↓
-AuthController 接收请求
+AuthService 执行 IP/设备限流、消费验证码、查询用户名
         ↓
-AuthService 按用户名查询用户
+BCrypt 校验密码，生成 JWT
         ↓
-BCrypt 校验密码
+Redis 写入 auth:token:<SHA-256(token)> → userId（有效期与 JWT 一致）
         ↓
-生成登录凭证 Token
+后端设置 NETWORKDISK_AUTH HttpOnly Cookie，JSON 只返回 userId/username
         ↓
-返回用户信息和 Token
+前端跳转 /drive；路由守卫请求 GET /api/v1/auth/me 确认会话
         ↓
-前端保存 Token
-        ↓
-跳转网盘首页
-        ↓
-后续请求携带 Authorization: Bearer <token>
+浏览器后续自动携带 Cookie；POST 请求另带 X-XSRF-TOKEN
 ```
 
 ## 3. 前端链路
@@ -82,21 +75,24 @@ frontend/src/views/LoginView.vue
 
 ### 3.3 请求封装
 
-建议在以下文件中统一封装：
+在以下文件统一处理 CSRF、设备 ID、Cookie 和错误响应：
 
 ```text
 frontend/src/api/auth.js
 ```
 
-请求示例：
+登录请求携带同一设备的 ID 和 CSRF token；认证 JWT 不放进请求体或浏览器存储：
 
 ```javascript
 export async function login(payload) {
   const response = await fetch('/api/v1/auth/login', {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/json'
+      'Content-Type': 'application/json',
+      'X-Device-Id': deviceId(),
+      'X-XSRF-TOKEN': await getCsrfToken()
     },
+    credentials: 'same-origin',
     body: JSON.stringify(payload)
   })
 
@@ -112,36 +108,49 @@ export async function login(payload) {
 
 后端返回成功后，前端需要：
 
-1. 保存 Token。
-2. 保存当前用户基本信息。
-3. 跳转到网盘首页，例如 `/drive`。
-4. 后续请求自动携带 Token。
+1. 浏览器自动保存 `NETWORKDISK_AUTH` HttpOnly Cookie，JavaScript 不能读取 JWT。
+2. 将 `userId`、`username` 等非敏感展示信息保存为当前用户信息；它们不用于认证。
+3. 跳转到 `/drive`。路由守卫调用 `GET /api/v1/auth/me`，从认证过滤器确认 Cookie 对应的用户后再进入网盘首页。
+4. 后续请求由浏览器自动携带 Cookie；所有 POST 请求都需要在 `X-XSRF-TOKEN` 请求头中回传 CSRF token。
 
-推荐使用 `localStorage` 保存开发阶段的 Token：
+CSRF token 初始化示例：
 
 ```javascript
-localStorage.setItem('access_token', data.accessToken)
+const response = await fetch('/api/v1/auth/csrf')
+const result = await response.json()
+const csrfToken = result.data
 ```
 
-生产环境需要结合安全要求评估 Token 存储方式，优先考虑 HttpOnly Cookie，避免 Token 被前端脚本直接读取。
+生产环境使用 HTTPS，并设置 `AUTH_COOKIE_SECURE=true`。登录 Cookie 使用 `HttpOnly`、`SameSite=Lax` 和根路径。
 
-### 3.5 后续请求携带 Token
+### 3.5 退出后重新登录
+
+成功退出时，服务端会清除 `NETWORKDISK_AUTH` 和 `XSRF-TOKEN` Cookie。前端模块内存中的 CSRF token 可能仍是退出前的旧值，因此退出后第一次登录请求可能被 Spring Security 以 403 拒绝（请求尚未进入登录 Controller）。
+
+前端登录请求在收到没有业务错误码的 403 时，重新请求 `GET /api/v1/auth/csrf`，再用新 token 重试一次。`CAPTCHA_REQUIRED` 等带业务错误码的响应按业务错误处理，不执行这个 CSRF 重试。CSRF 失败的重试仅用于登录请求；其他写请求仍需根据其业务语义单独处理。
+
+若退出接口返回非 401 错误，前端保留当前用户界面和状态并提示退出失败；退出成功或服务端确认会话已失效（401）后，才清除本地用户信息并跳转登录页。
+
+### 3.6 后续请求携带 Cookie
 
 ```javascript
-const token = localStorage.getItem('access_token')
-
-fetch('/api/v1/files', {
+fetch('/api/v1/auth/logout', {
+  method: 'POST',
+  credentials: 'same-origin',
   headers: {
-    Authorization: `Bearer ${token}`
+    'Content-Type': 'application/json',
+    'X-XSRF-TOKEN': csrfToken
   }
 })
 ```
+
+认证 Cookie 由浏览器自动携带，前端不得通过 JavaScript 读取 JWT。当前工程还没有文件列表等业务接口，上面的受保护请求示例仅用于说明认证传递方式。
 
 ## 4. 后端链路
 
 ### 4.1 请求对象
 
-建议新增：
+当前请求 DTO：
 
 ```text
 backend/src/main/java/com/networkdisk/auth/LoginRequest.java
@@ -155,7 +164,10 @@ public record LoginRequest(
 
         @NotBlank(message = "请输入密码")
         @Size(min = 6, max = 64, message = "密码长度为6-64位")
-        String password
+        String password,
+
+        @NotBlank(message = "请输入验证码")
+        String captchaCode
 ) {
 }
 ```
@@ -167,6 +179,8 @@ public record LoginRequest(
 ```http
 POST /api/v1/auth/login
 Content-Type: application/json
+X-Device-Id: <device UUID>
+X-XSRF-TOKEN: <CSRF token>
 ```
 
 请求体：
@@ -174,7 +188,8 @@ Content-Type: application/json
 ```json
 {
   "username": "user001",
-  "password": "123456"
+  "password": "123456",
+  "captchaCode": "2345"
 }
 ```
 
@@ -186,20 +201,19 @@ Content-Type: application/json
 backend/src/main/java/com/networkdisk/auth/AuthController.java
 ```
 
-Controller 只负责：
+Controller 负责：
 
 - 接收请求
 - 触发参数校验
 - 调用 `AuthService`
-- 返回统一响应
+- 设置认证 Cookie 并返回统一响应
 
 示例：
 
 ```java
-@PostMapping("/login")
-public Result<LoginResponse> login(@Valid @RequestBody LoginRequest request) {
-    return Result.success(authService.login(request));
-}
+// AuthService 返回的 JWT 仅写入 HttpOnly Cookie；JSON 返回 userId 和 username。
+AuthCookie.set(response, login.accessToken(), authService.tokenTtlSeconds(), authCookieSecure);
+return Result.success(new LoginSessionResponse(login.userId(), login.username()));
 ```
 
 ### 4.4 Service 层
@@ -212,13 +226,12 @@ backend/src/main/java/com/networkdisk/auth/AuthService.java
 
 核心步骤：
 
-1. 用户名标准化：去除首尾空格。
-2. 通过 `UserRepository` 按用户名查询用户。
-3. 用户不存在时返回统一登录失败信息。
-4. 使用 `BCryptPasswordEncoder.matches()` 校验密码。
-5. 密码错误时返回统一登录失败信息。
-6. 校验成功后生成 Token。
-7. 返回 Token、用户 ID 和用户名。
+1. 标准化用户名和设备 ID。
+2. 检查 IP 与设备登录请求频率、账号失败锁定状态。
+3. 从 Redis 一次性校验与用户名、设备绑定的图片验证码。
+4. 通过 `UserRepository` 按用户名查询用户，并用 `BCryptPasswordEncoder.matches()` 校验密码。
+5. 校验成功后生成 JWT，并将 `SHA-256(token)` 摘要作为 Redis key 写入 `auth:token:<digest>`，value 为 userId，TTL 与 JWT 一致。
+6. 返回 JWT、用户 ID 和用户名给 Controller；Controller 只将 JWT 写入 HttpOnly Cookie，响应 JSON 只包含用户 ID 和用户名。
 
 伪代码：
 
@@ -231,7 +244,8 @@ if (!passwordEncoder.matches(request.password(), user.getPasswordHash())) {
     throw new AuthBusinessException("LOGIN_FAILED", "用户名或密码错误");
 }
 
-String accessToken = tokenService.create(user);
+String accessToken = tokenService.create(user.getId(), user.getPasswordHash());
+activeTokenRepository.activate(accessToken, user.getId(), tokenService.ttlSeconds());
 return new LoginResponse(accessToken, user.getId(), user.getNickName());
 ```
 
@@ -271,7 +285,6 @@ HTTP 状态码：
   "code": "OK",
   "message": "操作成功",
   "data": {
-    "accessToken": "eyJhbGciOiJIUzI1NiJ9...",
     "userId": 1,
     "username": "user001"
   }
@@ -318,21 +331,29 @@ HTTP 状态码：
 
 ## 6. Token 校验链路
 
-登录成功后，文件列表、上传、分享和回收站等接口都需要经过认证过滤器：
+登录成功后，当前用户接口和后续受保护业务接口都经过认证过滤器：
 
 ```text
-前端携带 Authorization 请求头
+浏览器自动携带 HttpOnly 登录 Cookie
         ↓
-JWT 过滤器解析 Token
+CSRF Filter 校验不安全请求的 X-XSRF-TOKEN
+        ↓
+JWT 过滤器读取 Cookie 中的 Token
         ↓
 校验签名和过期时间
         ↓
 获取 userId
         ↓
+检查 Redis 中该 Token 的 allowlist 记录
+        ↓
+确认 JWT 中的凭据版本仍匹配当前密码哈希
+        ↓
 写入当前请求上下文
         ↓
 Controller 执行业务
 ```
+
+`GET /api/v1/auth/me` 使用当前请求的认证 userId 查询用户名，作为刷新页面和路由守卫确认登录状态的接口。令牌在 Redis 中以 SHA-256 摘要键保存，原始 JWT 不作为 Redis key。
 
 Token 无效或过期时返回：
 
@@ -342,18 +363,15 @@ Token 无效或过期时返回：
 
 ## 7. 登出链路
 
-如果采用无状态 JWT：
-
-1. 前端删除本地 Token。
-2. 清除当前用户信息。
-3. 跳转到 `/login`。
-
-如果采用 Redis Session 或 Token 黑名单，还需要后端提供：
+后端从当前请求的 `NETWORKDISK_AUTH` Cookie 读取 JWT，删除对应的 Redis allowlist 键，并将登录 Cookie 设为过期。退出请求必须同时通过认证过滤器和 CSRF 校验：
 
 ```http
 POST /api/v1/auth/logout
-Authorization: Bearer <token>
+Cookie: NETWORKDISK_AUTH=<HttpOnly token>
+X-XSRF-TOKEN: <CSRF token>
 ```
+
+退出成功后，前端清除本地非敏感用户信息并跳转 `/login`。该操作只撤销当前 Cookie 对应的会话，不撤销同一账号的其他会话。退出响应还会清除 `XSRF-TOKEN`；下一次登录遇到无业务错误码的 403 时，前端重新获取 CSRF token 后重试一次。
 
 ## 8. 安全要求
 
@@ -368,6 +386,6 @@ Authorization: Bearer <token>
 
 ## 9. 当前状态
 
-已完成用户名密码登录、令牌签发、Vue 登录页接入和登录接口测试。
+已完成验证码与限流、登录令牌签发及 Redis allowlist、Cookie 认证过滤器、`/me` 会话确认、退出撤销、CSRF 保护和登录后网盘空首页路由守卫。
 
-后续仍需在受保护业务接口上增加令牌校验过滤器、前端请求统一携带令牌，以及登录后的业务首页路由守卫。
+回归覆盖位于 `backend/src/test/java/com/networkdisk/config/SecurityFilterChainRegressionTest.java`：登录 Cookie 下发、Cookie 认证、CSRF 拒绝、退出清除 Cookie 和旧令牌拒绝、刷新 CSRF 后重新登录。`AuthServiceTest` 和 `ActiveTokenRepositoryTest` 覆盖单会话撤销及 Redis 摘要键删除。

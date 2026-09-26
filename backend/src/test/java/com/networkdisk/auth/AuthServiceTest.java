@@ -7,10 +7,13 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -24,6 +27,12 @@ class AuthServiceTest {
     private UserRepository userRepository;
     @Mock
     private TokenService tokenService;
+    @Mock
+    private ActiveTokenRepository activeTokenRepository;
+    @Mock
+    private LoginAttemptRedisRepository loginAttemptRepository;
+    @Mock
+    private CaptchaGenerator captchaGenerator;
 
     /** 被测试的业务对象。 */
     private AuthService authService;
@@ -34,7 +43,18 @@ class AuthServiceTest {
     /** 每个测试前重新创建 Service，保证测试相互独立。 */
     void setUp() {
         passwordEncoder = new BCryptPasswordEncoder();
-        authService = new AuthService(userRepository, passwordEncoder, tokenService);
+        authService = new AuthService(userRepository, passwordEncoder, tokenService,
+                activeTokenRepository, loginAttemptRepository, captchaGenerator, new LoginSecurityProperties());
+    }
+
+    private void stubLoginSecurity() {
+        when(loginAttemptRepository.beginIpAttempt(anyString(), anyInt(), anyInt()))
+                .thenReturn(new LoginAttemptRedisRepository.IpAttemptResult(false, 60));
+        when(loginAttemptRepository.beginDeviceAttempt(anyString(), anyInt(), anyInt()))
+                .thenReturn(new LoginAttemptRedisRepository.IpAttemptResult(false, 300));
+        when(loginAttemptRepository.getFailureState(anyString()))
+                .thenReturn(new LoginAttemptRedisRepository.FailureState(0, -1));
+        when(loginAttemptRepository.verifyAndConsumeCaptcha(anyString(), anyString(), anyString())).thenReturn(true);
     }
 
     @Test
@@ -89,35 +109,111 @@ class AuthServiceTest {
 
     @Test
     void loginShouldUseUsernameAndReturnToken() {
+        stubLoginSecurity();
         User user = new User("user@example.com", "user001", passwordEncoder.encode("123456"));
+        ReflectionTestUtils.setField(user, "id", 42L);
         when(userRepository.findByNickName("user001")).thenReturn(java.util.Optional.of(user));
-        when(tokenService.create(user.getId())).thenReturn("access-token");
+        when(tokenService.create(user.getId(), user.getPasswordHash())).thenReturn("access-token");
+        when(tokenService.ttlSeconds()).thenReturn(7200L);
 
-        LoginResponse response = authService.login(new LoginRequest(" user001 ", "123456"));
+        LoginResponse response = authService.login(new LoginRequest(" user001 ", "123456", "2345"));
 
         verify(userRepository).findByNickName("user001");
         assertThat(response.accessToken()).isEqualTo("access-token");
         assertThat(response.username()).isEqualTo("user001");
+        verify(activeTokenRepository).activate("access-token", user.getId(), 7200L);
+    }
+
+    @Test
+    void loginShouldUseLowercaseUsernameForRedisAndMysqlButReturnStoredCasing() {
+        stubLoginSecurity();
+        User user = new User("user@example.com", "Admin", passwordEncoder.encode("123456"));
+        ReflectionTestUtils.setField(user, "id", 42L);
+        when(userRepository.findByNickName("admin")).thenReturn(java.util.Optional.of(user));
+        when(tokenService.create(user.getId(), user.getPasswordHash())).thenReturn("access-token");
+        when(tokenService.ttlSeconds()).thenReturn(7200L);
+
+        LoginResponse response = authService.login(new LoginRequest("  ADMIN  ", "123456", "2345"));
+
+        verify(loginAttemptRepository).getFailureState("admin");
+        verify(loginAttemptRepository).verifyAndConsumeCaptcha("admin", "unknown", "2345");
+        verify(userRepository).findByNickName("admin");
+        verify(loginAttemptRepository).clearFailure("admin");
+        verify(loginAttemptRepository).clearCaptcha("admin", "unknown");
+        assertThat(response.username()).isEqualTo("Admin");
+    }
+
+    @Test
+    void captchaShouldUseNormalizedUsernameForRedisKey() {
+        when(captchaGenerator.generate()).thenReturn(new CaptchaGenerator.Captcha("2345", "image"));
+
+        authService.issueCaptcha("  AdMiN  ");
+
+        verify(loginAttemptRepository).saveCaptcha("admin", "unknown", "2345", 300);
     }
 
     @Test
     void unknownUsernameShouldReturnGenericLoginFailure() {
+        stubLoginSecurity();
         when(userRepository.findByNickName("missing")).thenReturn(java.util.Optional.empty());
 
-        assertThatThrownBy(() -> authService.login(new LoginRequest("missing", "123456")))
+        assertThatThrownBy(() -> authService.login(new LoginRequest("missing", "123456", "2345")))
                 .isInstanceOf(AuthBusinessException.class)
                 .hasMessage("用户名或密码错误");
-        verify(tokenService, never()).create(any());
+        verify(tokenService, never()).create(any(), anyString());
     }
 
     @Test
     void wrongPasswordShouldReturnGenericLoginFailure() {
+        stubLoginSecurity();
         User user = new User("user@example.com", "user001", passwordEncoder.encode("correct-password"));
         when(userRepository.findByNickName("user001")).thenReturn(java.util.Optional.of(user));
 
-        assertThatThrownBy(() -> authService.login(new LoginRequest("user001", "wrong-password")))
+        assertThatThrownBy(() -> authService.login(new LoginRequest("user001", "wrong-password", "2345")))
                 .isInstanceOf(AuthBusinessException.class)
                 .hasMessage("用户名或密码错误");
-        verify(tokenService, never()).create(any());
+        verify(tokenService, never()).create(any(), anyString());
+    }
+
+    @Test
+    void changingPasswordRequiresCurrentPasswordAndChangesStoredHash() {
+        User user = new User("user@example.com", "user001", passwordEncoder.encode("old-password"));
+        when(userRepository.findById(7L)).thenReturn(java.util.Optional.of(user));
+
+        assertThatThrownBy(() -> authService.changePassword(7L,
+                new ChangePasswordRequest("wrong-password", "new-password")))
+                .isInstanceOf(AuthBusinessException.class)
+                .satisfies(error -> assertThat(((AuthBusinessException) error).getCode())
+                        .isEqualTo("INVALID_CURRENT_PASSWORD"));
+        assertThat(passwordEncoder.matches("old-password", user.getPasswordHash())).isTrue();
+
+        authService.changePassword(7L, new ChangePasswordRequest("old-password", "new-password"));
+        assertThat(passwordEncoder.matches("new-password", user.getPasswordHash())).isTrue();
+    }
+
+    @Test
+    void logoutRevokesOnlyPresentedToken() {
+        authService.logout("jwt-value");
+        verify(activeTokenRepository).revoke("jwt-value");
+    }
+
+    @Test
+    void loggingOutOneOfTwoSessionsRevokesOnlyThatSession() {
+        stubLoginSecurity();
+        User user = new User("user@example.com", "user001", passwordEncoder.encode("123456"));
+        ReflectionTestUtils.setField(user, "id", 42L);
+        when(userRepository.findByNickName("user001")).thenReturn(java.util.Optional.of(user));
+        when(tokenService.create(user.getId(), user.getPasswordHash()))
+                .thenReturn("first-session-token", "second-session-token");
+        when(tokenService.ttlSeconds()).thenReturn(7200L);
+
+        LoginResponse firstSession = authService.login(new LoginRequest("user001", "123456", "2345"));
+        LoginResponse secondSession = authService.login(new LoginRequest("user001", "123456", "2345"));
+        authService.logout(firstSession.accessToken());
+
+        verify(activeTokenRepository).activate("first-session-token", 42L, 7200L);
+        verify(activeTokenRepository).activate("second-session-token", 42L, 7200L);
+        verify(activeTokenRepository).revoke("first-session-token");
+        verify(activeTokenRepository, never()).revoke("second-session-token");
     }
 }

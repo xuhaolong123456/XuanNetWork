@@ -1,6 +1,7 @@
 package com.networkdisk.common;
 
 import com.networkdisk.auth.AuthBusinessException;
+import com.networkdisk.file.FileBusinessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -23,6 +24,13 @@ public class GlobalExceptionHandler {
         return builder.body(Result.failure(exception.getCode(), exception.getMessage()));
     }
 
+    @ExceptionHandler(FileBusinessException.class)
+    public ResponseEntity<Result<Void>> handleFileBusiness(FileBusinessException exception) {
+        HttpStatus status = "FILE_NOT_FOUND".equals(exception.getCode())
+                ? HttpStatus.NOT_FOUND : HttpStatus.BAD_REQUEST;
+        return ResponseEntity.status(status).body(Result.failure(exception.getCode(), exception.getMessage()));
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     public Result<Void> handleValidation(MethodArgumentNotValidException exception) {
@@ -42,11 +50,11 @@ public class GlobalExceptionHandler {
 
     private HttpStatus statusFor(String code) {
         return switch (code) {
-            case "LOGIN_FAILED" -> HttpStatus.UNAUTHORIZED;
+            case "LOGIN_FAILED", "UNAUTHORIZED" -> HttpStatus.UNAUTHORIZED;
             case "CAPTCHA_REQUIRED" -> HttpStatus.FORBIDDEN;
             case "CAPTCHA_INVALID" -> HttpStatus.BAD_REQUEST;
             case "ACCOUNT_LOCKED" -> HttpStatus.LOCKED;
-            case "EMAIL_COOLDOWN", "EMAIL_DAILY_LIMITED", "IP_RATE_LIMITED",
+            case "EMAIL_COOLDOWN", "EMAIL_DAILY_LIMITED", "IP_RATE_LIMITED", "DEVICE_RATE_LIMITED",
                     "SEND_IN_PROGRESS", "REGISTER_IN_PROGRESS" -> HttpStatus.TOO_MANY_REQUESTS;
             case "REDIS_UNAVAILABLE", "MAIL_SEND_FAILED" -> HttpStatus.SERVICE_UNAVAILABLE;
             default -> HttpStatus.BAD_REQUEST;

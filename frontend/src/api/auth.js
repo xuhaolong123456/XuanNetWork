@@ -1,8 +1,29 @@
+let csrfToken = ''
+
+// Remove the legacy JavaScript-readable bearer token during the HttpOnly-cookie migration.
+if (typeof localStorage !== 'undefined') localStorage.removeItem('access_token')
+
+async function getCsrfToken(forceRefresh = false) {
+  // This endpoint also lets Spring set the readable XSRF-TOKEN cookie; the auth cookie stays HttpOnly.
+  if (csrfToken && !forceRefresh) return csrfToken
+  const response = await fetch('/api/v1/auth/csrf', { credentials: 'same-origin' })
+  const result = await response.json().catch(() => null)
+  if (!response.ok || !result?.success) throw new Error(result?.message || '安全令牌获取失败，请刷新页面')
+  csrfToken = result.data
+  return csrfToken
+}
+
+async function csrfHeaders() {
+  // Echo the CSRF token in a custom header so cross-site HTML forms cannot forge unsafe API requests.
+  return { 'X-XSRF-TOKEN': csrfToken || await getCsrfToken() }
+}
+
 export async function register(payload) {
   // 验证码随注册请求提交，最终以服务端校验结果为准。
   const response = await fetch('/api/v1/auth/register', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...(await csrfHeaders()) },
+    credentials: 'same-origin',
     body: JSON.stringify(payload)
   })
 
@@ -16,22 +37,59 @@ export async function register(payload) {
 export async function sendEmailCode(email) {
   // 前端不生成验证码，只负责调用后端发送接口。
   const response = await fetch('/api/v1/auth/email-code', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email })
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...(await csrfHeaders()) },
+    credentials: 'same-origin', body: JSON.stringify({ email })
   })
   const result = await response.json().catch(() => null)
   if (!response.ok || !result?.success) throw new Error(result?.message || '验证码发送失败')
   return result
 }
 
+const DEVICE_ID_STORAGE_KEY = 'login_device_id'
+
+function createDeviceId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID()
+  const bytes = new Uint8Array(16)
+  globalThis.crypto.getRandomValues(bytes)
+  bytes[6] = (bytes[6] & 0x0f) | 0x40
+  bytes[8] = (bytes[8] & 0x3f) | 0x80
+  const hex = [...bytes].map(byte => byte.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+
+export function deviceId() {
+  let value = localStorage.getItem(DEVICE_ID_STORAGE_KEY)
+  if (!value) {
+    value = createDeviceId()
+    localStorage.setItem(DEVICE_ID_STORAGE_KEY, value)
+  }
+  return value
+}
+
 export async function login(payload) {
-  const response = await fetch('/api/v1/auth/login', {
+  const sendLogin = async () => fetch('/api/v1/auth/login', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'X-Device-Id': deviceId(), ...(await csrfHeaders()) },
+    credentials: 'same-origin',
     body: JSON.stringify(payload)
   })
-  const result = await response.json().catch(() => null)
+  let response = await sendLogin()
+  let result = await response.json().catch(() => null)
+
+  // Logout or a security-filter response can invalidate the in-memory CSRF value.
+  // A 403 without a business error code is rejected before the login handler runs.
+  if (response.status === 403 && !result?.code) {
+    await getCsrfToken(true)
+    response = await sendLogin()
+    result = await response.json().catch(() => null)
+  }
   if (!response.ok || !result?.success) {
-    const error = new Error(result?.message || '登录失败，请稍后重试')
+    const fallback = response.status === 403
+      ? '安全校验失败，请刷新页面后重试'
+      : response.status >= 500
+        ? '登录服务暂不可用，请稍后重试'
+        : `登录失败（HTTP ${response.status}），请检查输入后重试`
+    const error = new Error(result?.message || fallback)
     error.code = result?.code
     error.status = response.status
     error.retryAfter = Number(response.headers.get('Retry-After') || 0)
@@ -40,8 +98,22 @@ export async function login(payload) {
   return result.data
 }
 
+export async function getCurrentUser() {
+  const response = await fetch('/api/v1/auth/me', { credentials: 'same-origin' })
+  const result = await response.json().catch(() => null)
+  if (!response.ok || !result?.success) {
+    const error = new Error(result?.message || '登录已失效，请重新登录')
+    error.status = response.status
+    error.code = result?.code
+    throw error
+  }
+  return result.data
+}
+
 export async function getCaptcha(username) {
-  const response = await fetch(`/api/v1/auth/captcha?username=${encodeURIComponent(username)}`)
+  const response = await fetch(`/api/v1/auth/captcha?username=${encodeURIComponent(username)}`, {
+    headers: { 'X-Device-Id': deviceId() }
+  })
   const result = await response.json().catch(() => null)
   if (!response.ok || !result?.success) {
     const error = new Error(result?.message || '验证码加载失败，请稍后重试')
@@ -50,4 +122,37 @@ export async function getCaptcha(username) {
     throw error
   }
   return result.data
+}
+
+async function authenticatedPost(path, payload) {
+  const response = await fetch(path, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(await csrfHeaders())
+    },
+    credentials: 'same-origin',
+    ...(payload ? { body: JSON.stringify(payload) } : {})
+  })
+  const result = await response.json().catch(() => null)
+  if (!response.ok || !result?.success) {
+    const error = new Error(result?.message || '操作失败，请稍后重试')
+    error.code = result?.code
+    error.status = response.status
+    throw error
+  }
+  return result.data
+}
+
+export function changePassword(currentPassword, newPassword) {
+  return authenticatedPost('/api/v1/auth/change-password', { currentPassword, newPassword })
+}
+
+export function logout() {
+  return authenticatedPost('/api/v1/auth/logout')
+}
+
+export function clearLoginSession() {
+  localStorage.removeItem('access_token')
+  localStorage.removeItem('current_user')
 }

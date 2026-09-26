@@ -1,5 +1,5 @@
 <template>
-  <main class="app-shell">
+  <main class="app-shell" :class="{ 'drive-shell': $route.meta.fullscreen }">
     <section class="brand-panel">
       <span class="brand-mark">K</span>
       <div>

@@ -8,12 +8,17 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.security.web.csrf.CsrfToken;
+import org.springframework.web.bind.annotation.CookieValue;
 
 @RestController
 @RequestMapping("/api/v1/auth")
@@ -26,6 +31,8 @@ public class AuthController {
     private final EmailCodeService emailCodeService;
     @Value("${app.forwarded-ip.trusted:false}")
     private boolean trustedForwardedIp;
+    @Value("${app.auth.cookie-secure:false}")
+    private boolean authCookieSecure;
 
     /** 构造方法参数由 Spring 容器从已注册的 AuthService Bean 中提供。 */
     public AuthController(AuthService authService, EmailCodeService emailCodeService) {
@@ -52,8 +59,18 @@ public class AuthController {
     }
 
     @PostMapping("/login")
-    public Result<LoginResponse> login(@Valid @RequestBody LoginRequest request, HttpServletRequest servletRequest) {
-        return Result.success(authService.login(request, clientIp(servletRequest)));
+    public Result<LoginSessionResponse> login(@Valid @RequestBody LoginRequest request, HttpServletRequest servletRequest,
+                                              @RequestHeader("X-Device-Id") String deviceId,
+                                              HttpServletResponse response) {
+        LoginResponse login = authService.login(request, clientIp(servletRequest), deviceId);
+        // Put the JWT only in the HttpOnly cookie; never serialize it in the JSON response.
+        AuthCookie.set(response, login.accessToken(), authService.tokenTtlSeconds(), authCookieSecure);
+        return Result.success(new LoginSessionResponse(login.userId(), login.username()));
+    }
+
+    @GetMapping("/me")
+    public Result<LoginSessionResponse> currentUser(@AuthenticationPrincipal Long userId) {
+        return Result.success(new LoginSessionResponse(userId, authService.username(userId)));
     }
 
     /** 兼容旧的控制层单元测试和内部调用；HTTP 请求走上面的真实 IP 重载。 */
@@ -62,11 +79,36 @@ public class AuthController {
     }
 
     @GetMapping("/captcha")
-    public Result<CaptchaResponse> captcha(@RequestParam String username) {
-        return Result.success(authService.issueCaptcha(username));
+    public Result<CaptchaResponse> captcha(@RequestParam String username,
+                                            @RequestHeader("X-Device-Id") String deviceId) {
+        return Result.success(authService.issueCaptcha(username, deviceId));
+    }
+
+    /** Materializes Spring Security's CSRF token and returns it so the frontend can echo it in unsafe requests. */
+    @GetMapping("/csrf")
+    public Result<String> csrf(CsrfToken csrfToken) {
+        return Result.success(csrfToken.getToken());
+    }
+
+    @PostMapping("/change-password")
+    public Result<String> changePassword(@AuthenticationPrincipal Long userId,
+                                         @Valid @RequestBody ChangePasswordRequest request,
+                                         HttpServletResponse response) {
+        authService.changePassword(userId, request);
+        AuthCookie.clear(response, authCookieSecure);
+        return Result.success("密码已修改，请重新登录");
+    }
+
+    @PostMapping("/logout")
+    public Result<String> logout(@CookieValue(name = AuthCookie.NAME, required = false) String token,
+                                 HttpServletResponse response) {
+        if (token != null && !token.isBlank()) authService.logout(token);
+        AuthCookie.clear(response, authCookieSecure);
+        return Result.success("已退出登录");
     }
 
     public record EmailCodeRequest(@NotBlank @Email String email) {}
+    public record LoginSessionResponse(Long userId, String username) {}
 
     /** 本地使用连接来源地址；生产环境只应由受信任网关注入 X-Forwarded-For。 */
     private String clientIp(HttpServletRequest request) {

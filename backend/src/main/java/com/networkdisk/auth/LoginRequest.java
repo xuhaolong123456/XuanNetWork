@@ -1,6 +1,7 @@
 package com.networkdisk.auth;
 
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
 /** 用户名密码登录请求。邮箱仅用于注册和接收验证码，不作为登录凭证。 */
@@ -13,7 +14,9 @@ public record LoginRequest(
         @Size(min = 6, max = 64, message = "密码长度为6-64位")
         String password,
 
-        /** 达到失败阈值后才填写；为空时由登录状态机返回 CAPTCHA_REQUIRED。 */
+        /** Every login requires a fresh image captcha. */
+        @NotBlank(message = "请输入验证码")
+        @Pattern(regexp = "\\d{4}", message = "验证码为4位数字")
         String captchaCode
 ) {
     public LoginRequest(String username, String password) {
