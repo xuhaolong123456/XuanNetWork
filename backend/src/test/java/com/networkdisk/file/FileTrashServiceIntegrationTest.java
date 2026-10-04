@@ -24,6 +24,7 @@ class FileTrashServiceIntegrationTest {
     @Autowired UserRepository users;
     @Autowired FileTrashService trash;
     @Autowired FileStorageService storage;
+    @Autowired FileService service;
     private User owner;
     private User other;
 
@@ -31,6 +32,36 @@ class FileTrashServiceIntegrationTest {
     void setUp() {
         owner = users.saveAndFlush(new User("owner@example.com", "owner", "hash"));
         other = users.saveAndFlush(new User("other@example.com", "other", "hash"));
+    }
+
+    @Test
+    void previewQueryExcludesOtherOwnersAndSoftDeletedFiles() {
+        UserFile mine = node(owner, null, "mine.txt", FileNodeType.FILE);
+        UserFile foreign = node(other, null, "foreign.txt", FileNodeType.FILE);
+        assertThatThrownBy(() -> service.preview(owner.getId(), foreign.getId()))
+                .isInstanceOf(FileBusinessException.class).extracting("status").isEqualTo(404);
+        trash.delete(owner.getId(), List.of(mine.getId()));
+        assertThatThrownBy(() -> service.preview(owner.getId(), mine.getId()))
+                .isInstanceOf(FileBusinessException.class).extracting("status").isEqualTo(404);
+        verifyNoInteractions(storage);
+    }
+
+    @Test
+    void folderTreeContainsOnlyCurrentOwnersActiveDirectories() {
+        UserFile root = node(owner, null, "root", FileNodeType.DIRECTORY);
+        UserFile child = node(owner, root, "child", FileNodeType.DIRECTORY);
+        node(owner, child, "notes.txt", FileNodeType.FILE);
+        node(other, null, "foreign", FileNodeType.DIRECTORY);
+        UserFile removed = node(owner, null, "removed", FileNodeType.DIRECTORY);
+        trash.delete(owner.getId(), List.of(removed.getId()));
+
+        List<FolderTreeNodeResponse> tree = service.folderTree(owner.getId());
+        assertThat(tree).hasSize(1);
+        assertThat(tree.get(0).id()).isEqualTo(root.getId());
+        assertThat(tree.get(0).parentId()).isZero();
+        assertThat(tree.get(0).children()).hasSize(1);
+        assertThat(tree.get(0).children().get(0).id()).isEqualTo(child.getId());
+        assertThat(tree.get(0).children().get(0).children()).isEmpty();
     }
 
     @Test
@@ -104,6 +135,8 @@ class FileTrashServiceIntegrationTest {
 
     @TestConfiguration
     static class Beans {
+        @Bean
+        ChunkUploadService chunkUploadService() { return mock(ChunkUploadService.class); }
         @Bean FileStorageService storage() { return mock(FileStorageService.class); }
     }
 }

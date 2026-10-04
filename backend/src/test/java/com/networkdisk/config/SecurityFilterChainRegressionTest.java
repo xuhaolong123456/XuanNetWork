@@ -36,7 +36,12 @@ import com.networkdisk.file.FileNodeType;
 import com.networkdisk.file.FilePageResponse;
 import com.networkdisk.file.FileService;
 import com.networkdisk.file.FileTrashService;
+import com.networkdisk.file.FolderTreeNodeResponse;
+import com.networkdisk.file.QuickCheckRequest;
+import com.networkdisk.file.QuickCheckResponse;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Base64;
 import java.util.HashSet;
 import java.util.Map;
@@ -46,6 +51,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.context.annotation.Bean;
@@ -62,9 +68,11 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-@WebMvcTest(controllers = {SecurityFilterChainRegressionTest.TestController.class, AuthController.class, FileController.class})
+@WebMvcTest(controllers = {SecurityFilterChainRegressionTest.TestController.class, AuthController.class, FileController.class,
+        com.networkdisk.file.ChunkUploadController.class, com.networkdisk.file.ListPartsController.class})
 @Import({SecurityConfig.class, SecurityFilterChainRegressionTest.TestBeans.class,
-        SecurityFilterChainRegressionTest.TestController.class, AuthController.class, FileController.class})
+        SecurityFilterChainRegressionTest.TestController.class, AuthController.class, FileController.class,
+        com.networkdisk.file.ChunkUploadController.class, com.networkdisk.file.ListPartsController.class})
 class SecurityFilterChainRegressionTest {
     private static final String DEVICE_ID = "123e4567-e89b-42d3-a456-426614174000";
     private static final String CSRF_TOKEN = "csrf-test-token";
@@ -76,12 +84,112 @@ class SecurityFilterChainRegressionTest {
     @Autowired private AuthService authService;
     @Autowired private FileService fileService;
     @Autowired private FileTrashService trashService;
+    @Autowired private com.networkdisk.file.ChunkUploadService chunkService;
+    @Autowired private com.networkdisk.file.ListPartsService listPartsService;
+
+    @Test
+    void listPartsUsesDefaultsNumericProtocolAndReadOnlyGetAuthentication() throws Exception {
+        mvc.perform(get("/api/v1/files/file/chunk-upload").param("identifier", "upload-test"))
+                .andExpect(status().isUnauthorized()).andExpect(jsonPath("$.code").value(401))
+                .andExpect(jsonPath("$.msg").value("用户未登录，请重新登录"));
+        String token = tokens.create(42L, "hash-one");
+        when(listPartsService.list(42L, "upload-test", 100, 0)).thenReturn(new com.networkdisk.file.ListPartsResponse(
+                "upload-test", 3, java.util.List.of(new com.networkdisk.file.ListPartsResponse.UploadedChunk(1, 4, "")), false, 0));
+        // GET 保持安全方法语义，不强制签发或验证新的 CSRF 令牌。
+        mvc.perform(get("/api/v1/files/file/chunk-upload").cookie(new MockCookie(AuthCookie.NAME, token))
+                        .param("identifier", "upload-test"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.msg").value("success"))
+                .andExpect(jsonPath("$.data.uploadedChunks[0].size").value(4))
+                .andExpect(jsonPath("$.data.nextPartNumberMarker").value(0));
+        verify(listPartsService).list(42L, "upload-test", 100, 0);
+        when(listPartsService.list(42L, "upload-test", 100, 0)).thenThrow(
+                new org.springframework.dao.DataAccessResourceFailureException("测试数据库故障"));
+        mvc.perform(get("/api/v1/files/file/chunk-upload").cookie(new MockCookie(AuthCookie.NAME, token))
+                        .param("identifier", "upload-test"))
+                .andExpect(status().isServiceUnavailable()).andExpect(jsonPath("$.code").value(503))
+                .andExpect(jsonPath("$.msg").value("服务暂时不可用"));
+        mvc.perform(get("/api/v1/files/file/chunk-upload").cookie(new MockCookie(AuthCookie.NAME, token))
+                        .param("identifier", "upload-test").param("maxParts", "bad"))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value(400));
+    }
+
+    @Test
+    void listPartsReturns503ForAuthenticationDependencyAndTransactionFailures() throws Exception {
+        String token = tokens.create(42L, "hash-one");
+        when(listPartsService.list(42L, "upload-test", 100, 0)).thenThrow(
+                new org.springframework.transaction.CannotCreateTransactionException("测试事务连接故障"));
+        mvc.perform(get("/api/v1/files/file/chunk-upload").cookie(new MockCookie(AuthCookie.NAME, token))
+                        .param("identifier", "upload-test"))
+                .andExpect(status().isServiceUnavailable()).andExpect(jsonPath("$.code").value(503));
+        when(activeTokens.isActive(token, 42L)).thenThrow(new RedisConnectionFailureException("测试认证依赖故障"));
+        mvc.perform(get("/api/v1/files/file/chunk-upload").cookie(new MockCookie(AuthCookie.NAME, token))
+                        .param("identifier", "upload-test"))
+                .andExpect(status().isServiceUnavailable()).andExpect(jsonPath("$.code").value(503))
+                .andExpect(jsonPath("$.msg").value("服务暂时不可用"));
+    }
+
+    @Test
+    void quickCheckMessageStatesWhetherInstantUploadWasHit() throws Exception {
+        String token = tokens.create(42L, "hash-one");
+        String body = "{\"fileHash\":\"" + "a".repeat(32)
+                + "\",\"fileSize\":5,\"fileName\":\"notes.txt\",\"parentFolderId\":null}";
+        when(fileService.quickCheck(eq(42L), any(QuickCheckRequest.class)))
+                .thenReturn(new QuickCheckResponse(true, 37L));
+        mvc.perform(post("/api/v1/files/quick-check").with(csrfRequest(token))
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.code").value("OK"))
+                .andExpect(jsonPath("$.message").value("秒传命中"))
+                .andExpect(jsonPath("$.data.exist").value(true))
+                .andExpect(jsonPath("$.data.fileId").value(37));
+
+        when(fileService.quickCheck(eq(42L), any(QuickCheckRequest.class)))
+                .thenReturn(new QuickCheckResponse(false, null, "upload-test", 8388608L, 2));
+        mvc.perform(post("/api/v1/files/quick-check").with(csrfRequest(token))
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.message").value("秒传未命中"))
+                .andExpect(jsonPath("$.data.exist").value(false))
+                .andExpect(jsonPath("$.data.uploadId").value("upload-test"));
+    }
+
+    @Test
+    void chunkUploadUsesNumericProtocolAndRequiresAuthenticationAndCsrf() throws Exception {
+        MockMultipartFile part = new MockMultipartFile("chunk", "abcd".getBytes(StandardCharsets.UTF_8));
+        mvc.perform(multipart("/api/v1/files/file/chunk-upload").file(part))
+                .andExpect(status().isUnauthorized()).andExpect(jsonPath("$.code").value(401))
+                .andExpect(jsonPath("$.msg").value("用户身份校验失败"));
+        String token = tokens.create(42L, "hash-one");
+        mvc.perform(multipart("/api/v1/files/file/chunk-upload").file(part)
+                        .cookie(new MockCookie(AuthCookie.NAME, token)))
+                .andExpect(status().isForbidden());
+        when(chunkService.upload(eq(42L), eq("large.txt"), eq("FILE"), eq(4L), eq("upload-test"), eq(1), eq("a".repeat(32)), any()))
+                .thenReturn(new com.networkdisk.file.ChunkUploadResponse("upload-test", 1, com.networkdisk.file.MergeFlag.READY, java.util.List.of(1)));
+        mvc.perform(multipart("/api/v1/files/file/chunk-upload").file(part).with(csrfRequest(token))
+                        .param("name", "large.txt").param("node_type", "FILE").param("size_bytes", "4")
+                        .param("uploadId", "upload-test").param("partNumber", "1").param("fileMd5", "a".repeat(32)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.msg").value("分片上传成功"))
+                .andExpect(jsonPath("$.data.mergeFlag").value(1));
+        when(chunkService.upload(eq(42L), anyString(), anyString(), org.mockito.ArgumentMatchers.anyLong(), anyString(),
+                org.mockito.ArgumentMatchers.anyInt(), anyString(), any()))
+                .thenThrow(new FileBusinessException("40001", "uploadId不存在或者非法", 400));
+        mvc.perform(multipart("/api/v1/files/file/chunk-upload").file(part).with(csrfRequest(token))
+                        .param("name", "large.txt").param("node_type", "FILE").param("size_bytes", "4")
+                        .param("uploadId", "unknown").param("partNumber", "1").param("fileMd5", "a".repeat(32)))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value(40001));
+        mvc.perform(multipart("/api/v1/files/file/chunk-upload").file(part).with(csrfRequest(token)))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value(400));
+    }
 
     private final AtomicBoolean active = new AtomicBoolean(true);
     private final AtomicReference<User> user = new AtomicReference<>();
 
     @BeforeEach
     void setUp() {
+        org.mockito.Mockito.reset(listPartsService);
         active.set(true);
         user.set(new User("user@example.com", "user001", "hash-one"));
         when(authService.tokenTtlSeconds()).thenReturn(7200L);
@@ -281,6 +389,122 @@ class SecurityFilterChainRegressionTest {
     }
 
     @Test
+    void previewRequiresAuthenticationAndReturnsWrappedContentWithoutCaching() throws Exception {
+        mvc.perform(get("/api/v1/files/file/preview").param("fileId", "12"))
+                .andExpect(status().isUnauthorized());
+        String token = tokens.create(42L, "hash-one");
+        when(fileService.preview(42L, 12L)).thenReturn(
+                new com.networkdisk.file.FilePreviewResponse(12L, "a.md", "md", "# 中文"));
+        mvc.perform(get("/api/v1/files/file/preview").param("fileId", "12").cookie(new MockCookie(AuthCookie.NAME, token)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.content").value("# 中文"))
+                .andExpect(jsonPath("$.data.format").value("md"))
+                .andExpect(header().string("Cache-Control", "no-store"));
+        verify(fileService).preview(42L, 12L);
+        mvc.perform(get("/api/v1/files/file/preview").cookie(new MockCookie(AuthCookie.NAME, token)))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value("INVALID_PARAM"));
+        mvc.perform(get("/api/v1/files/file/preview").param("fileId", "abc").cookie(new MockCookie(AuthCookie.NAME, token)))
+                .andExpect(status().isBadRequest());
+        when(fileService.preview(42L, 99L)).thenThrow(new FileBusinessException("FILE_NOT_FOUND", "资源不存在", 404));
+        mvc.perform(get("/api/v1/files/file/preview").param("fileId", "99").cookie(new MockCookie(AuthCookie.NAME, token)))
+                .andExpect(status().isNotFound()).andExpect(jsonPath("$.code").value("FILE_NOT_FOUND"))
+                .andExpect(jsonPath("$.success").value(false));
+    }
+
+    @Test
+    void folderTreeReturns404WithoutLogin204WhenEmptyAndNestedNodesWhenPresent() throws Exception {
+        mvc.perform(get("/api/v1/files/file/tree"))
+                .andExpect(status().isNotFound()).andExpect(jsonPath("$.code").value("FILE_NOT_FOUND"));
+        String token = tokens.create(42L, "hash-one");
+        when(fileService.folderTree(42L)).thenReturn(java.util.List.of());
+        mvc.perform(get("/api/v1/files/file/tree").cookie(new MockCookie(AuthCookie.NAME, token)))
+                .andExpect(status().isNoContent());
+        FolderTreeNodeResponse root = new FolderTreeNodeResponse(1L, 0L, "根目录");
+        root.children().add(new FolderTreeNodeResponse(2L, 1L, "子目录"));
+        when(fileService.folderTree(42L)).thenReturn(java.util.List.of(root));
+        mvc.perform(get("/api/v1/files/file/tree").cookie(new MockCookie(AuthCookie.NAME, token)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].id").value(1))
+                .andExpect(jsonPath("$.data[0].parentId").value(0))
+                .andExpect(jsonPath("$.data[0].children[0].name").value("子目录"));
+        verify(fileService, org.mockito.Mockito.times(2)).folderTree(42L);
+    }
+
+    @Test
+    void downloadStreamsOwnedFileAndSeparatesParameterErrorFromMissingResource(@TempDir Path directory) throws Exception {
+        mvc.perform(get("/api/v1/files/file/download").param("filename", "说明.txt"))
+                .andExpect(status().isUnauthorized()).andExpect(jsonPath("$.code").value("UNAUTHORIZED"));
+        String token = tokens.create(42L, "hash-one");
+        Path stored = directory.resolve("content");
+        Files.writeString(stored, "文件内容", StandardCharsets.UTF_8);
+        when(fileService.download(42L, "说明.txt", 12L))
+                .thenReturn(new FileService.FileDownload("说明.txt", stored));
+        mvc.perform(get("/api/v1/files/file/download").param("filename", "说明.txt")
+                        .param("fileId", "12").cookie(new MockCookie(AuthCookie.NAME, token)))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Content-Type", "application/octet-stream"))
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(header().string("Content-Disposition", org.hamcrest.Matchers.containsString("attachment")))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.content()
+                        .bytes("文件内容".getBytes(StandardCharsets.UTF_8)));
+        verify(fileService).download(42L, "说明.txt", 12L);
+        mvc.perform(get("/api/v1/files/file/download").cookie(new MockCookie(AuthCookie.NAME, token)))
+                .andExpect(status().isUnauthorized()).andExpect(jsonPath("$.code").value("INVALID_PARAM"));
+        mvc.perform(get("/api/v1/files/file/download").param("filename", "说明.txt")
+                        .param("fileId", "bad").cookie(new MockCookie(AuthCookie.NAME, token)))
+                .andExpect(status().isUnauthorized()).andExpect(jsonPath("$.code").value("INVALID_PARAM"));
+        when(fileService.download(42L, "missing.txt", null))
+                .thenThrow(new FileBusinessException("FILE_NOT_FOUND", "资源不存在", 404));
+        mvc.perform(get("/api/v1/files/file/download").param("filename", "missing.txt")
+                        .cookie(new MockCookie(AuthCookie.NAME, token)))
+                .andExpect(status().isNotFound()).andExpect(jsonPath("$.code").value("FILE_NOT_FOUND"));
+    }
+
+    @Test
+    void batchDownloadRequiresAuthenticationAndStreamsZip(@TempDir Path directory) throws Exception {
+        String body = "{\"ids\":[12,13]}";
+        mvc.perform(post("/api/v1/files/files/download").with(csrfRequest(null))
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isUnauthorized());
+        String token = tokens.create(42L, "hash-one");
+        Path first = directory.resolve("first");
+        Path second = directory.resolve("second");
+        Files.writeString(first, "one");
+        Files.writeString(second, "two");
+        when(fileService.downloadMany(42L, java.util.List.of(12L, 13L)))
+                .thenReturn(java.util.List.of(new FileService.FileDownload("same.txt", first),
+                        new FileService.FileDownload("same.txt", second)));
+        MvcResult pending = mvc.perform(post("/api/v1/files/files/download").with(csrfRequest(token))
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.request().asyncStarted())
+                .andReturn();
+        MvcResult completed = mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .asyncDispatch(pending))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Content-Disposition", "attachment; filename=\"files.zip\""))
+                .andReturn();
+        try (var zip = new java.util.zip.ZipInputStream(
+                new java.io.ByteArrayInputStream(completed.getResponse().getContentAsByteArray()), StandardCharsets.UTF_8)) {
+            org.assertj.core.api.Assertions.assertThat(zip.getNextEntry().getName()).isEqualTo("same.txt");
+            org.assertj.core.api.Assertions.assertThat(new String(zip.readAllBytes(), StandardCharsets.UTF_8)).isEqualTo("one");
+            org.assertj.core.api.Assertions.assertThat(zip.getNextEntry().getName()).isEqualTo("same（1）.txt");
+            org.assertj.core.api.Assertions.assertThat(new String(zip.readAllBytes(), StandardCharsets.UTF_8)).isEqualTo("two");
+        }
+        verify(fileService).downloadMany(42L, java.util.List.of(12L, 13L));
+    }
+
+    @Test
+    void emptyUploadReturnsDistinctBusinessCodeWith401() throws Exception {
+        String token = tokens.create(42L, "hash-one");
+        when(fileService.upload(eq(42L), eq(null), any()))
+                .thenThrow(new FileBusinessException("EMPTY_FILE", "不能上传空文件", 401));
+        mvc.perform(multipart("/api/v1/files/upload")
+                        .file(new MockMultipartFile("file", "empty.txt", "text/plain", new byte[0]))
+                        .with(csrfRequest(token)))
+                .andExpect(status().isUnauthorized()).andExpect(jsonPath("$.code").value("EMPTY_FILE"));
+        org.mockito.Mockito.reset(fileService);
+    }
+
+    @Test
     void fileUploadRequiresAuthenticationAndUsesPrincipalAsOwner() throws Exception {
         MockMultipartFile file = new MockMultipartFile("file", "notes.txt", "text/plain", "hello".getBytes());
         mvc.perform(multipart("/api/v1/files/upload").file(file).with(csrfRequest(null)))
@@ -416,6 +640,14 @@ class SecurityFilterChainRegressionTest {
 
     @org.springframework.boot.test.context.TestConfiguration
     static class TestBeans {
+        @Bean
+        com.networkdisk.file.ListPartsService listPartsService() {
+            return mock(com.networkdisk.file.ListPartsService.class);
+        }
+        @Bean
+        com.networkdisk.file.ChunkUploadService chunkUploadService() {
+            return mock(com.networkdisk.file.ChunkUploadService.class);
+        }
         static String secret() {
             return Base64.getEncoder().encodeToString(
                     "regression-test-key-longer-than-32-bytes".getBytes(StandardCharsets.UTF_8));

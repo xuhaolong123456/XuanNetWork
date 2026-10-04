@@ -18,6 +18,8 @@
                         @toggle="toggleTreeNode" @activate="activateTreeNode" @retry="retryTreeNode" />
         </div>
         <button class="trash-nav" type="button" @click="router.push({ path: '/drive', query: { view: 'trash' } })">♲ 回收站</button>
+        <button class="folder-tree-nav" type="button" @click="router.push('/drive/tree')">⌘ 文件夹树 <span aria-hidden="true">↗</span></button>
+        <button class="folder-tree-nav knowledge-graph-nav" type="button" @click="router.push('/drive/knowledge')">✳ 知识图谱 <span aria-hidden="true">↗</span></button>
       </nav>
       <div class="storage-card">
         <div class="storage-title"><span>网盘状态</span></div>
@@ -64,7 +66,7 @@
             <div v-if="!isTrash" class="file-actions">
               <button class="folder-create-button" type="button" :disabled="fileOperationBusy" @click="openFolderDialog">新建文件夹</button>
               <button class="drive-upload" type="button" :disabled="fileOperationBusy" @click="chooseUpload"><span>＋</span>上传文件</button>
-              <input ref="uploadInput" class="visually-hidden" type="file" multiple @change="uploadSelectedFiles" />
+              <input ref="uploadInput" class="visually-hidden" type="file" accept=".txt,.docx,.csv,.xlsx,.pdf,.md,.html,.pptx" multiple @change="uploadSelectedFiles" />
             </div>
           </div>
           <nav v-if="!isTrash" class="file-breadcrumbs" aria-label="目录导航">
@@ -73,20 +75,51 @@
               <button type="button" :disabled="index === breadcrumbs.length - 1 || loading" @click="openDirectory(crumb.id)">{{ crumb.name }}</button>
             </template>
           </nav>
-          <div v-if="selectedIds.length" class="selection-toolbar"><strong>已选 {{ selectedIds.length }} 项</strong><button type="button" :disabled="fileOperationBusy" @click="selectedIds = []">取消选择</button><button type="button" :disabled="fileOperationBusy" @click="openBatchDialog">{{ isTrash ? '恢复所选' : '删除所选' }}</button></div>
+          <div v-if="!isTrash" class="upload-dropzone" :class="{ 'is-dragging': isDragging, disabled: fileOperationBusy }"
+               role="button" tabindex="0" :aria-disabled="fileOperationBusy"
+               @click="chooseUpload" @keydown.enter.prevent="chooseUpload" @keydown.space.prevent="chooseUpload"
+               @dragenter.prevent="handleDragEnter" @dragover.prevent="handleDragOver"
+               @dragleave.prevent="handleDragLeave" @drop.prevent="handleDrop">
+            <section v-if="uploadItems.length" class="upload-progress-panel" aria-live="polite" aria-label="上传进度" @click.stop>
+              <div class="upload-progress-heading">
+                <strong>上传队列</strong>
+                <span>{{ uploadCompletedCount }} / {{ uploadItems.length }} 已完成</span>
+              </div>
+              <div v-for="item in uploadItems" :key="item.id" class="upload-progress-item">
+                <div class="upload-progress-meta">
+                  <span class="upload-progress-name" :title="item.name">{{ item.name }}</span>
+                  <span :class="'upload-progress-status ' + item.status">
+                    {{ uploadStatusText(item.status) }}<template v-if="item.status === 'uploading' || item.status === 'hashing'"> {{ item.progress }}%</template>
+                  </span>
+                </div>
+                <div class="upload-progress-track" role="progressbar" :aria-valuenow="item.progress" aria-valuemin="0" aria-valuemax="100" :aria-label="item.name + ' 上传进度'">
+                  <span :class="item.status" :style="{ width: item.progress + '%' }"></span>
+                </div>
+                <small v-if="item.error" class="upload-progress-error">{{ item.error }}</small>
+              </div>
+            </section>
+            <span class="upload-dropzone-icon" aria-hidden="true">↑</span>
+            <strong>点击或拖动文件到此处上传</strong>
+            <span>支持 .txt、.docx、.csv、.xlsx、.pdf、.md、.html、.pptx 类型文件</span>
+            <small>不超过 2 GiB 直接上传，较大文件分片上传；分片到齐后等待后续合并。刷新后重新选择相同文件可续传。</small>
+          </div>
+          <div v-if="selectedIds.length" class="selection-toolbar"><strong>已选 {{ selectedIds.length }} 项</strong><button type="button" :disabled="fileOperationBusy" @click="selectedIds = []">取消选择</button><button v-if="!isTrash" type="button" :disabled="fileOperationBusy || !downloadableSelection.length" :title="downloadableSelection.length ? '下载所选的可下载文件' : '所选项目没有可下载的文件'" @click="downloadSelected">批量下载</button><button v-if="!isTrash" type="button" :disabled="fileOperationBusy" @click="openMoveDialog">移动到</button><button type="button" :disabled="fileOperationBusy" @click="openBatchDialog">{{ isTrash ? '恢复所选' : '删除所选' }}</button></div>
           <div class="file-table-head"><input type="checkbox" aria-label="选择本页全部项目" :checked="items.length > 0 && selectedIds.length === items.length" :indeterminate="selectedIds.length > 0 && selectedIds.length < items.length" :disabled="fileOperationBusy || !items.length" @change="selectedIds = $event.target.checked ? items.map(item => item.id) : []" /><span>名称</span><span>{{ isTrash ? '删除时间' : '修改时间' }}</span><span>大小</span><span class="folder-action-heading">操作</span></div>
 
           <div v-if="loading" class="file-state" role="status">正在加载文件列表…</div>
           <div v-else-if="errorMessage" class="file-state error" role="alert">{{ errorMessage }}<button type="button" @click="loadFiles">重试</button></div>
           <div v-else-if="items.length" class="file-list">
-            <div v-for="item in items" :key="item.id" class="file-row" :class="{ selected: selectedIds.includes(item.id) || selectedFileId === item.id }">
-              <input v-model="selectedIds" type="checkbox" :value="item.id" :aria-label="`选择 ${item.name}`" :disabled="fileOperationBusy" />
-              <button class="file-entry" type="button" @click="activateItem(item)">
+            <div v-for="item in items" :key="item.id" class="file-row" :class="{ selected: selectedIds.includes(item.id) }" @click="activateItem(item)">
+              <input v-model="selectedIds" type="checkbox" :value="item.id" :aria-label="`选择 ${item.name}`" :disabled="fileOperationBusy" @click.stop />
+              <button class="file-entry" type="button" @click.stop="activateItem(item)">
                 <span class="file-name"><span class="file-icon" :class="item.type.toLowerCase()">{{ item.type === 'DIRECTORY' ? '📁' : '📄' }}</span><strong>{{ item.name }}<small v-if="isTrash" class="trash-origin">原目录：{{ item.parentName }}</small></strong></span>
                 <span class="file-date">{{ formatDate(isTrash ? item.deletedAt : item.updatedAt) }}</span>
                 <span class="file-size">{{ item.type === 'DIRECTORY' ? '—' : formatSize(item.sizeBytes) }}</span>
               </button>
-              <div class="folder-row-actions">
+              <div class="folder-row-actions" @click.stop>
+                <span v-if="!isTrash && item.type === 'FILE'" :title="canDownload(item) ? '下载' : '该文件不支持下载'">
+                  <button type="button" :aria-label="`下载 ${item.name}`" :disabled="fileOperationBusy || !canDownload(item)" @click="downloadOne(item)">↓</button>
+                </span>
                 <button v-if="!isTrash && item.type === 'DIRECTORY'" type="button" :aria-label="`重命名文件夹 ${item.name}`" title="重命名" :disabled="fileOperationBusy" @click="openRenameDialog(item)">✎</button>
                 <button type="button" class="folder-delete-action" :aria-label="`${isTrash ? '恢复' : '删除'} ${item.name}`" :title="isTrash ? '恢复' : '删除'" :disabled="fileOperationBusy" @click="openDeleteDialog(item)">{{ isTrash ? '↶' : '×' }}</button>
               </div>
@@ -102,7 +135,6 @@
             <span>第 {{ page.number + 1 }} / {{ page.totalPages }} 页 · 共 {{ page.totalElements }} 项</span>
             <button type="button" :disabled="page.number + 1 >= page.totalPages" @click="changePage(page.number + 1)">下一页</button>
           </div>
-          <p v-if="selectedFile" class="selected-file" role="status">已选择文件：{{ selectedFile.name }}（{{ formatSize(selectedFile.sizeBytes) }}）</p>
         </section>
         <div v-if="folderDialogOpen" class="modal-backdrop" @click.self="closeFolderDialog">
           <section class="folder-dialog" role="dialog" aria-modal="true" aria-labelledby="folder-dialog-title">
@@ -129,6 +161,23 @@
             </div>
           </section>
         </div>
+        <div v-if="moveDialogOpen" class="modal-backdrop" @click.self="closeMoveDialog">
+          <section class="folder-dialog" role="dialog" aria-modal="true" aria-labelledby="move-dialog-title">
+            <h2 id="move-dialog-title">移动到</h2>
+            <p class="move-target-label">{{ moveTarget ? `目标文件夹：${moveTarget.name}` : '请选择目标文件夹' }}</p>
+            <div class="move-tree" role="tree" aria-label="目标文件夹">
+              <FileTreeNode v-for="root in moveTreeRoots" :key="root.id" :node="root"
+                            :selected-id="moveTarget?.id ?? ''" @toggle="toggleMoveNode"
+                            @activate="activateMoveNode" />
+              <p v-if="!moveTreeRoots.length && !moveError" class="tree-message">暂无可用目标文件夹</p>
+            </div>
+            <p v-if="moveError" class="dialog-error" role="alert">{{ moveError }}</p>
+            <div class="dialog-actions">
+              <button type="button" :disabled="moving" @click="closeMoveDialog">取消</button>
+              <button class="primary-action" type="button" :disabled="moving || !moveTarget" @click="confirmMove">{{ moving ? '移动中…' : '确认移动' }}</button>
+            </div>
+          </section>
+        </div>
         <p v-if="accountError" class="drive-notice error" role="alert">{{ accountError }}</p>
         <p v-if="fileOperationMessage" class="drive-notice" :class="{ error: fileOperationError }" :role="fileOperationError ? 'alert' : 'status'">{{ fileOperationMessage }}</p>
       </section>
@@ -141,7 +190,9 @@ import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { changePassword, clearLoginSession, logout } from '../api/auth'
 import FileTreeNode from '../components/FileTreeNode.vue'
-import { createDirectory, deleteFile, deleteFiles, restoreFile, restoreFiles, listTrash, listFiles, renameDirectory, uploadFile } from '../api/files'
+import { createDirectory, deleteFile, deleteFiles, downloadFile, downloadFiles, listFolderTree, moveFiles, restoreFile, restoreFiles, listTrash, listFiles, renameDirectory } from '../api/files'
+import { uploadSelectedFile } from '../upload/upload.js'
+import { isLoginExpired } from '../preview/files.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -167,10 +218,11 @@ const accountError = ref('')
 const data = ref(null)
 const loading = ref(false)
 const errorMessage = ref('')
-const selectedFileId = ref(null)
 const selectedIds = ref([])
 const isTrash = computed(() => route.query.view === 'trash')
 const uploadInput = ref(null)
+const dragDepth = ref(0)
+const isDragging = ref(false)
 const folderDialogOpen = ref(false)
 const folderDialogMode = ref('create')
 const editingFolderId = ref(null)
@@ -189,15 +241,72 @@ const savingFolderName = ref(false)
 const deleteTarget = ref(null)
 const deleteFolderError = ref('')
 const deletingFolder = ref(false)
+const moving = ref(false)
+const moveDialogOpen = ref(false)
+const moveTreeRoots = ref([])
+const moveTarget = ref(null)
+const moveError = ref('')
 const uploading = ref(false)
+const downloading = ref(false)
+const uploadItems = ref([])
 const fileOperationMessage = ref('')
 const fileOperationError = ref(false)
 const items = computed(() => data.value?.items || [])
+const downloadableSelection = computed(() => items.value.filter(item => selectedIds.value.includes(item.id) && canDownload(item)))
 const breadcrumbs = computed(() => data.value?.breadcrumbs || [{ id: null, name: '我的文件' }])
 const currentTitle = computed(() => isTrash.value ? '回收站' : (data.value?.currentDirectory?.name || '我的文件'))
 const page = computed(() => data.value?.page || { number: 0, size: 50, totalElements: 0, totalPages: 0 })
-const selectedFile = computed(() => items.value.find(item => item.id === selectedFileId.value && item.type === 'FILE'))
-const fileOperationBusy = computed(() => loading.value || savingFolderName.value || deletingFolder.value || uploading.value)
+const fileOperationBusy = computed(() => loading.value || savingFolderName.value || deletingFolder.value || moving.value || uploading.value || downloading.value)
+const uploadCompletedCount = computed(() => uploadItems.value.filter(item => ['success', 'pendingMerge'].includes(item.status)).length)
+
+function uploadStatusText(status) {
+  return { queued: '等待中', hashing: '计算完整文件指纹', uploading: '上传中', success: '上传成功', pendingMerge: '分片已到齐，待合并', error: '上传失败，可重新选择续传' }[status] || status
+}
+
+function updateUploadItem(id, patch) {
+  const item = uploadItems.value.find(current => current.id === id)
+  if (item) Object.assign(item, patch)
+}
+
+function canDownload(item) {
+  return item.type === 'FILE' && item.downloadAllowed !== false && item.previewAllowed !== false
+}
+
+async function downloadOne(item) {
+  if (!canDownload(item) || downloading.value) return
+  downloading.value = true
+  fileOperationMessage.value = ''
+  fileOperationError.value = false
+  try {
+    await downloadFile({ filename: item.name, fileId: item.id })
+    fileOperationMessage.value = `已开始下载 ${item.name}`
+  } catch (error) {
+    fileOperationError.value = true
+    fileOperationMessage.value = error.message
+    if (error.status === 401 && error.code !== 'INVALID_PARAM') handleFileMutationError(error)
+  } finally {
+    downloading.value = false
+  }
+}
+
+async function downloadSelected() {
+  if (downloading.value || !downloadableSelection.value.length) return
+  const chosen = [...downloadableSelection.value]
+  const skipped = selectedIds.value.length - chosen.length
+  downloading.value = true
+  fileOperationError.value = false
+  fileOperationMessage.value = ''
+  try {
+    await downloadFiles(chosen.map(item => item.id))
+    fileOperationMessage.value = `已开始下载 ${chosen.length} 个文件的 ZIP 压缩包${skipped ? `，跳过 ${skipped} 项不可下载内容` : ''}`
+  } catch (error) {
+    fileOperationError.value = true
+    fileOperationMessage.value = error.message
+    if (error.status === 401) handleFileMutationError(error)
+  } finally {
+    downloading.value = false
+  }
+}
 let latestListRequest = 0
 
 watch(() => [route.query.parentId, route.query.page, route.query.view], loadFiles, { immediate: true })
@@ -274,7 +383,6 @@ async function loadFiles() {
     })
     if (requestId !== latestListRequest) return
     data.value = result
-    selectedFileId.value = null
     selectedIds.value = []
   } catch (error) {
     if (requestId !== latestListRequest) return
@@ -295,7 +403,7 @@ function openDirectory(id) {
 function activateItem(item) {
   if (isTrash.value || fileOperationBusy.value) return
   if (item.type === 'DIRECTORY') openDirectory(item.id)
-  else selectedFileId.value = item.id
+  else router.push({ path: `/drive/preview/${item.id}`, query: { ...route.query } })
 }
 
 function changePage(number) {
@@ -399,6 +507,72 @@ function openBatchDialog() {
   fileOperationError.value = false
 }
 
+function mapMoveTreeNode(node) {
+  return {
+    id: node.id,
+    name: node.name,
+    type: 'DIRECTORY',
+    expanded: false,
+    children: (node.children || []).map(mapMoveTreeNode),
+    childrenLoaded: true,
+    loading: false,
+    error: ''
+  }
+}
+
+async function openMoveDialog() {
+  if (!selectedIds.value.length || isTrash.value || moving.value) return
+  moveTarget.value = null
+  moveError.value = ''
+  fileOperationError.value = false
+  fileOperationMessage.value = ''
+  moveDialogOpen.value = true
+  try {
+    moveTreeRoots.value = (await listFolderTree()).map(mapMoveTreeNode)
+  } catch (error) {
+    moveTreeRoots.value = []
+    moveError.value = error.message
+    handleFileMutationError(error)
+  }
+}
+
+function toggleMoveNode(node) {
+  node.expanded = !node.expanded
+}
+
+function activateMoveNode(node) {
+  if (node.type === 'DIRECTORY') moveTarget.value = { id: node.id, name: node.name }
+}
+
+function closeMoveDialog() {
+  if (moving.value) return
+  moveDialogOpen.value = false
+  moveError.value = ''
+}
+
+async function confirmMove() {
+  if (!moveTarget.value || moving.value) return
+  const ids = [...selectedIds.value]
+  const target = { ...moveTarget.value }
+  moving.value = true
+  moveError.value = ''
+  fileOperationMessage.value = ''
+  fileOperationError.value = false
+  try {
+    await moveFiles(ids, target.id)
+    moveDialogOpen.value = false
+    fileOperationMessage.value = `已将 ${ids.length} 项移动到“${target.name}”`
+    await refreshFirstPage()
+  } catch (error) {
+    moveError.value = error.message
+    fileOperationError.value = true
+    fileOperationMessage.value = `移动失败：${error.message}`
+    handleFileMutationError(error)
+  } finally {
+    moving.value = false
+  }
+}
+
 function closeDeleteDialog() {
   if (deletingFolder.value) return
   deleteTarget.value = null
@@ -430,34 +604,96 @@ async function confirmDeleteFolder() {
 }
 
 function chooseUpload() {
+  if (fileOperationBusy.value) return
   uploadInput.value?.click()
 }
 
-async function uploadSelectedFiles(event) {
-  const selectedFiles = [...(event.target.files || [])]
-  event.target.value = ''
+function handleDragEnter(event) {
+  if (fileOperationBusy.value || !Array.from(event.dataTransfer?.types || []).includes('Files')) return
+  dragDepth.value += 1
+  isDragging.value = true
+}
+
+function handleDragOver(event) {
+  if (!fileOperationBusy.value && event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
+}
+
+function handleDragLeave() {
+  dragDepth.value = Math.max(0, dragDepth.value - 1)
+  if (dragDepth.value === 0) isDragging.value = false
+}
+
+function handleDrop(event) {
+  dragDepth.value = 0
+  isDragging.value = false
+  if (fileOperationBusy.value) return
+  uploadSelectedFiles([...event.dataTransfer.files])
+}
+
+async function uploadSelectedFiles(source) {
+  const selectedFiles = Array.isArray(source) ? source : [...(source.target?.files || [])]
+  if (source.target) source.target.value = ''
   if (!selectedFiles.length) return
 
   uploading.value = true
   fileOperationMessage.value = ''
   fileOperationError.value = false
   const parentId = typeof route.query.parentId === 'string' ? route.query.parentId : null
+  const batchId = Date.now()
+  uploadItems.value = selectedFiles.map((file, index) => ({
+    id: 'upload-' + batchId + '-' + index,
+    name: file.name,
+    progress: 0,
+    status: 'queued',
+    error: ''
+  }))
   let uploadedCount = 0
+  let failedCount = 0
+  let instantCount = 0
+  let pendingMergeCount = 0
   try {
-    for (const file of selectedFiles) {
+    for (const [index, file] of selectedFiles.entries()) {
+      const itemId = 'upload-' + batchId + '-' + index
+      updateUploadItem(itemId, { status: 'hashing', progress: 0, error: '' })
       try {
-        await uploadFile({ file, parentId })
+        const result = await uploadSelectedFile({
+          file, parentId, userId: savedUser.userId,
+          onHashProgress: progress => updateUploadItem(itemId, { status: 'hashing', progress }),
+          onProgress: progress => updateUploadItem(itemId, { status: 'uploading', progress })
+        })
+        if (result.pendingMerge) {
+          pendingMergeCount += 1
+          updateUploadItem(itemId, { status: 'pendingMerge', progress: 100 })
+          continue
+        }
+        if (result.instant) {
+          instantCount += 1
+        }
+        updateUploadItem(itemId, { status: 'success', progress: 100 })
         uploadedCount += 1
       } catch (error) {
+        updateUploadItem(itemId, { status: 'error', error: error.message })
+        failedCount += 1
         fileOperationError.value = true
         fileOperationMessage.value = `${file.name} 上传失败：${error.message}`
         handleFileMutationError(error)
-        break
+        // 登录失效后终止整个上传批次，避免跳转登录期间继续发送分片。
+        if (isLoginExpired(error)) break
       }
     }
     if (uploadedCount) {
       if (!fileOperationError.value) fileOperationMessage.value = `已上传 ${uploadedCount} 个文件`
+      fileOperationMessage.value = failedCount
+        ? '上传完成：' + uploadedCount + ' 个成功，' + failedCount + ' 个失败'
+        : instantCount === uploadedCount
+          ? '上传成功：' + instantCount + ' 个文件已秒传'
+          : instantCount
+            ? '上传成功：' + instantCount + ' 个文件秒传，' + (uploadedCount - instantCount) + ' 个文件已上传'
+            : '上传成功：已上传 ' + uploadedCount + ' 个文件'
       await refreshFirstPage()
+    }
+    if (pendingMergeCount) {
+      fileOperationMessage.value = `${uploadedCount} 个文件上传成功，${pendingMergeCount} 个文件分片已到齐、待合并` + (failedCount ? `，${failedCount} 个失败` : '')
     }
   } finally {
     uploading.value = false
@@ -481,7 +717,7 @@ async function refreshLoadedTree(node) {
 }
 
 function handleFileMutationError(error) {
-  if (error.status === 401) {
+  if (isLoginExpired(error)) {
     clearLoginSession()
     router.replace('/login')
   }

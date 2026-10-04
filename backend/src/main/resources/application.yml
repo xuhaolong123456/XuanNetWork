@@ -12,12 +12,14 @@ spring:
         format_sql: true
   servlet:
     multipart:
-      max-file-size: 100MB
-      max-request-size: 100MB
+      max-file-size: 2GB
+      # 为 multipart 表单头预留空间，保证恰好 2 GiB 的直传文件可以上传。
+      max-request-size: 2049MB
+      file-size-threshold: 0
 app:
   storage:
     root: ${FILE_STORAGE_ROOT:./uploads}
-    max-file-size-bytes: ${FILE_MAX_SIZE_BYTES:104857600}
+    max-file-size-bytes: ${FILE_MAX_SIZE_BYTES:2147483648}
   mail.enabled: ${MAIL_ENABLED:true}
   login:
     fail-lock-threshold: ${LOGIN_FAIL_LOCK_THRESHOLD:5}

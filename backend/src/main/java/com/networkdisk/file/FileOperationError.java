@@ -5,6 +5,9 @@ import jakarta.servlet.http.HttpServletRequest;
 public record FileOperationError(int code, String msg, Object data) {
     public static boolean applies(HttpServletRequest request) {
         String path = request.getRequestURI();
+        // 读取类接口使用统一 Result 结构，不能被单文件删除的路径前缀规则覆盖。
+        if (path.equals("/api/v1/files/file/preview") || path.equals("/api/v1/files/file/download")
+                || path.equals("/api/v1/files/file/tree")) return false;
         return path.startsWith("/api/v1/files/file/") || path.equals("/api/v1/files/files")
                 || path.startsWith("/api/v1/files/recover/") || path.equals("/api/v1/files/recycle-bin")
                 || (request.getMethod().equals("DELETE") && path.startsWith("/api/v1/files/directories/"));

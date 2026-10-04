@@ -7,6 +7,8 @@ uploads/
 node_modules/
 dist/
 .npm-cache/
+frontend/test-results/
+frontend/playwright-report/
 
 # === Java / Maven 构建产物 ===
 target/

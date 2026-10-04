@@ -4,6 +4,9 @@ import App from './App.vue'
 import LoginView from './views/LoginView.vue'
 import RegisterView from './views/RegisterView.vue'
 import DriveView from './views/DriveView.vue'
+import FilePreviewView from './views/FilePreviewView.vue'
+import FolderGraphView from './views/FolderGraphView.vue'
+import KnowledgeGraphView from './views/KnowledgeGraphView.vue'
 import { clearLoginSession, getCurrentUser } from './api/auth'
 import './style.css'
 
@@ -12,6 +15,9 @@ const router = createRouter({
   routes: [
     { path: '/', redirect: '/drive' },
     { path: '/drive', component: DriveView, meta: { requiresAuth: true, fullscreen: true } },
+    { path: '/drive/tree', component: FolderGraphView, meta: { requiresAuth: true, fullscreen: true } },
+    { path: '/drive/knowledge', component: KnowledgeGraphView, meta: { requiresAuth: true, fullscreen: true } },
+    { path: '/drive/preview/:fileId', component: FilePreviewView, meta: { requiresAuth: true, fullscreen: true } },
     { path: '/login', component: LoginView, meta: { guestOnly: true } },
     { path: '/register', component: RegisterView, meta: { guestOnly: true } }
   ]

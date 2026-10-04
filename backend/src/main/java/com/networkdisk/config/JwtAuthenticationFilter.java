@@ -7,6 +7,7 @@ import com.networkdisk.auth.TokenService;
 import com.networkdisk.auth.UserRepository;
 import com.networkdisk.common.Result;
 import com.networkdisk.file.FileOperationError;
+import com.networkdisk.file.ChunkUploadResult;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -67,7 +68,9 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                     response.setStatus(HttpServletResponse.SC_SERVICE_UNAVAILABLE);
                     response.setContentType(MediaType.APPLICATION_JSON_VALUE);
                     response.setCharacterEncoding("UTF-8");
-                    mapper.writeValue(response.getWriter(), FileOperationError.applies(request)
+                    mapper.writeValue(response.getWriter(), ChunkUploadResult.isListParts(request)
+                            ? ChunkUploadResult.failure(503, "服务暂时不可用")
+                            : FileOperationError.applies(request)
                             ? FileOperationError.of(503, "认证服务暂不可用")
                             : Result.failure("AUTH_SERVICE_UNAVAILABLE", "认证服务暂不可用"));
                     return;

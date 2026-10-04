@@ -6,6 +6,8 @@ import com.networkdisk.auth.TokenService;
 import com.networkdisk.auth.UserRepository;
 import com.networkdisk.common.Result;
 import com.networkdisk.file.FileOperationError;
+import com.networkdisk.file.ChunkUploadResult;
+import jakarta.servlet.DispatcherType;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.MediaType;
@@ -37,6 +39,8 @@ public class SecurityConfig {
                 .httpBasic(basic -> basic.disable())
                 .requestCache(cache -> cache.disable())
                 .authorizeHttpRequests(auth -> auth
+                        // 流式 ZIP 已在初始请求完成认证；异步续写需允许同一请求再次分派。
+                        .dispatcherTypeMatchers(DispatcherType.ASYNC).permitAll()
                         .requestMatchers(HttpMethod.GET, "/", "/api/v1/auth/captcha", "/api/v1/auth/csrf").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/auth/login", "/api/v1/auth/register",
                                 "/api/v1/auth/email-code").permitAll()
@@ -45,10 +49,16 @@ public class SecurityConfig {
                         .requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
                         .anyRequest().authenticated())
                 .exceptionHandling(exceptions -> exceptions.authenticationEntryPoint((request, response, error) -> {
-                    response.setStatus(401);
+                    // 文件夹树按接口约定隐藏未授权访问，避免暴露资源状态。
+                    boolean folderTree = request.getRequestURI().equals("/api/v1/files/file/tree");
+                    response.setStatus(folderTree ? 404 : 401);
                     response.setContentType(MediaType.APPLICATION_JSON_VALUE);
                     response.setCharacterEncoding("UTF-8");
-                    mapper.writeValue(response.getWriter(), FileOperationError.applies(request)
+                    mapper.writeValue(response.getWriter(), ChunkUploadResult.applies(request)
+                            ? ChunkUploadResult.failure(401, ChunkUploadResult.unauthorizedMessage(request))
+                            : folderTree
+                            ? Result.failure("FILE_NOT_FOUND", "资源不存在")
+                            : FileOperationError.applies(request)
                             ? FileOperationError.of(401, "请先登录或重新登录")
                             : Result.failure("UNAUTHORIZED", "请先登录或重新登录"));
                 }).accessDeniedHandler((request, response, error) -> {
@@ -58,7 +68,9 @@ public class SecurityConfig {
                     response.setStatus(status);
                     response.setContentType(MediaType.APPLICATION_JSON_VALUE);
                     response.setCharacterEncoding("UTF-8");
-                    mapper.writeValue(response.getWriter(), FileOperationError.applies(request)
+                    mapper.writeValue(response.getWriter(), ChunkUploadResult.applies(request)
+                            ? ChunkUploadResult.failure(status, status == 401 ? ChunkUploadResult.unauthorizedMessage(request) : "请求校验失败，请刷新后重试")
+                            : FileOperationError.applies(request)
                             ? FileOperationError.of(status, status == 401 ? "请先登录或重新登录" : "请求校验失败，请刷新后重试")
                             : Result.failure("FORBIDDEN", "请求校验失败，请刷新后重试"));
                 }))

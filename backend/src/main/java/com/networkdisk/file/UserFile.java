@@ -52,6 +52,16 @@ public class UserFile {
     @Column(name = "storage_key", length = 512)
     private String storageKey;
 
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "physical_file_id")
+    private PhysicalFile physicalFile;
+
+    @Column(name = "download_allowed", nullable = false, columnDefinition = "boolean default true")
+    private boolean downloadAllowed = true;
+
+    @Column(name = "preview_allowed", nullable = false, columnDefinition = "boolean default true")
+    private boolean previewAllowed = true;
+
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
 
@@ -93,6 +103,12 @@ public class UserFile {
         this.updatedAt = this.createdAt;
     }
 
+    public UserFile(User owner, UserFile parent, String name, PhysicalFile physicalFile) {
+        this(owner, parent, name, FileNodeType.FILE, physicalFile.getFileSize(),
+                physicalFile.getMimeType(), physicalFile.getStorageKey());
+        this.physicalFile = physicalFile;
+    }
+
     @PrePersist
     void beforeInsert() {
         LocalDateTime now = LocalDateTime.now();
@@ -112,12 +128,21 @@ public class UserFile {
     public FileNodeType getNodeType() { return nodeType; }
     public long getSizeBytes() { return sizeBytes; }
     public String getMimeType() { return mimeType; }
-    public String getStorageKey() { return storageKey; }
+    public String getStorageKey() {
+        return physicalFile == null ? storageKey : physicalFile.getStorageKey();
+    }
+    public PhysicalFile getPhysicalFile() { return physicalFile; }
+    public boolean isDownloadAllowed() { return downloadAllowed; }
+    public boolean isPreviewAllowed() { return previewAllowed; }
     public LocalDateTime getUpdatedAt() { return updatedAt; }
     public boolean isDeleted() { return deleted; }
     public LocalDateTime getDeletedAt() { return deletedAt; }
 
     public void rename(String name) {
         this.name = name;
+    }
+
+    public void moveTo(UserFile parent) {
+        this.parent = parent;
     }
 }

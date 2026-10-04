@@ -2,6 +2,8 @@ package com.networkdisk.file;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -24,7 +26,9 @@ class FileServiceTest {
     private final UserFileRepository files = mock(UserFileRepository.class);
     private final UserRepository users = mock(UserRepository.class);
     private final FileStorageService storage = mock(FileStorageService.class);
+    private final PhysicalFileRepository physicalFiles = mock(PhysicalFileRepository.class);
     private final FileService service = new FileService(files, users, storage);
+    private final FileService quickCheckService = new FileService(files, users, storage, physicalFiles);
     @org.junit.jupiter.api.BeforeEach
     void ownerLock() {
         when(users.findByIdForUpdate(7L)).thenReturn(Optional.of(new User("owner@example.com", "owner", "hash")));
@@ -230,6 +234,96 @@ class FileServiceTest {
                 new MockMultipartFile("file", "notes.txt", "text/plain", new byte[] {1})))
                 .isInstanceOf(IllegalStateException.class);
         verify(storage).delete("7/abc");
+    }
+
+    @Test
+    void quickCheckCreatesUserMetadataWithoutReceivingFileBytesWhenPhysicalFileExists() {
+        User owner = new User("owner@example.com", "owner", "hash");
+        PhysicalFile physical = new PhysicalFile(
+                "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+                5, "blobs/existing", "text/plain");
+        ReflectionTestUtils.setField(physical, "id", 19L);
+        when(users.findByIdForUpdate(7L)).thenReturn(Optional.of(owner));
+        when(physicalFiles.findByFileHashAndFileSize(
+                "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824", 5L))
+                .thenReturn(Optional.of(physical));
+        when(files.save(any(UserFile.class))).thenAnswer(invocation -> {
+            UserFile file = invocation.getArgument(0);
+            ReflectionTestUtils.setField(file, "id", 20086L);
+            return file;
+        });
+
+        QuickCheckResponse result = quickCheckService.quickCheck(7L,
+                new QuickCheckRequest(
+                        "2CF24DBA5FB0A30E26E83B2AC5B9E29E1B161E5C1FA7425E73043362938B9824",
+                        5L, "notes.txt", null));
+
+        assertThat(result).isEqualTo(new QuickCheckResponse(true, 20086L));
+        verify(files).save(any(UserFile.class));
+        verifyNoInteractions(storage);
+    }
+
+    @Test
+    void quickCheckMissReturnsBeforeAnyMetadataOrStorageOperation() {
+        when(users.findByIdForUpdate(7L)).thenReturn(Optional.of(new User("owner@example.com", "owner", "hash")));
+        when(physicalFiles.findByFileHashAndFileSize(any(), eq(5L))).thenReturn(Optional.empty());
+
+        QuickCheckResponse result = quickCheckService.quickCheck(7L,
+                new QuickCheckRequest("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+                        5L, "notes.txt", null));
+
+        assertThat(result).isEqualTo(new QuickCheckResponse(false, null));
+        verify(files, never()).save(any(UserFile.class));
+        verifyNoInteractions(storage);
+    }
+
+    @Test
+    void md5MissInitializesLargeSessionButSmallFileDoesNot() {
+        when(users.findByIdForUpdate(7L)).thenReturn(Optional.of(new User("owner@example.com", "owner", "hash")));
+        ChunkUploadService chunks = mock(ChunkUploadService.class);
+        quickCheckService.setChunks(chunks);
+        long size = 3 * 1024 * 1024 * 1024L;
+        String md5 = "a".repeat(32);
+        when(chunks.createSession(7L, "large.txt", size, md5, null)).thenReturn(new ChunkUploadSession(
+                "upload-test", 7, "large.txt", size, md5, ChunkUploadService.CHUNK_SIZE, java.time.Instant.now(), null));
+        QuickCheckResponse response = quickCheckService.quickCheck(7L, new QuickCheckRequest(md5, size, "large.txt", null));
+        assertThat(response.uploadId()).isEqualTo("upload-test");
+        assertThat(response.totalParts()).isEqualTo(384);
+        assertThat(response.chunkSize()).isEqualTo(ChunkUploadService.CHUNK_SIZE);
+        QuickCheckResponse small = quickCheckService.quickCheck(7L, new QuickCheckRequest(md5, 2 * 1024 * 1024 * 1024L, "large.txt", null));
+        assertThat(small.uploadId()).isNull();
+        verify(chunks, org.mockito.Mockito.times(1)).createSession(anyLong(), anyString(), anyLong(), anyString(), any());
+        verifyNoInteractions(storage);
+    }
+
+    @Test
+    void md5HitCreatesRecordWithoutChunkSessionOrStorage() {
+        when(users.findByIdForUpdate(7L)).thenReturn(Optional.of(new User("owner@example.com", "owner", "hash")));
+        ChunkUploadService chunks = mock(ChunkUploadService.class);
+        quickCheckService.setChunks(chunks);
+        String md5 = "a".repeat(32);
+        long size = 3 * 1024 * 1024 * 1024L;
+        when(physicalFiles.findFirstByFileMd5AndFileSize(md5, size)).thenReturn(Optional.of(
+                new PhysicalFile("b".repeat(64), size, "blobs/existing", "text/plain")));
+        when(files.save(any(UserFile.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        assertThat(quickCheckService.quickCheck(7L, new QuickCheckRequest(md5, size, "large.txt", null)).exist()).isTrue();
+        verifyNoInteractions(chunks, storage);
+    }
+
+    @Test
+    void md5MissReusesProvidedSessionAfterCheckingPhysicalFiles() {
+        ChunkUploadService chunks = mock(ChunkUploadService.class);
+        quickCheckService.setChunks(chunks);
+        String md5 = "a".repeat(32);
+        long size = 3 * 1024 * 1024 * 1024L;
+        when(chunks.resumeSession(7L, "upload-existing", "large.txt", size, md5))
+                .thenReturn(new ChunkUploadSession("upload-existing", 7, "large.txt", size, md5,
+                        ChunkUploadService.CHUNK_SIZE, java.time.Instant.now(), null));
+        QuickCheckResponse response = quickCheckService.quickCheck(7L,
+                new QuickCheckRequest(md5, size, "large.txt", null, "upload-existing"));
+        assertThat(response.uploadId()).isEqualTo("upload-existing");
+        verify(chunks, never()).createSession(anyLong(), anyString(), anyLong(), anyString(), any());
+        verifyNoInteractions(storage);
     }
 
     @Test

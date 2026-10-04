@@ -22,6 +22,15 @@ public interface UserFileRepository extends JpaRepository<UserFile, Long> {
     @Query("select f from UserFile f where f.id = :id and f.owner.id = :ownerId and f.deleted = false")
     Optional<UserFile> findByIdAndOwner_Id(@Param("id") Long id, @Param("ownerId") Long ownerId);
 
+    @Query("select f from UserFile f where f.owner.id = :ownerId and f.name = :name and f.deleted = false and f.nodeType = com.networkdisk.file.FileNodeType.FILE")
+    List<UserFile> findActiveFilesByOwnerAndName(@Param("ownerId") long ownerId, @Param("name") String name);
+
+    @Query("select new com.networkdisk.file.FolderTreeRow(f.id, p.id, f.name) "
+            + "from UserFile f left join f.parent p "
+            + "where f.owner.id = :ownerId and f.deleted = false "
+            + "and f.nodeType = com.networkdisk.file.FileNodeType.DIRECTORY order by f.name, f.id")
+    List<FolderTreeRow> findActiveDirectoryRows(@Param("ownerId") long ownerId);
+
     // 子目录创建时锁住目标目录，确保同一目录的重名处理串行执行。
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select file from UserFile file where file.id = :id and file.owner.id = :ownerId and file.deleted = false")
