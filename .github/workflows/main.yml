@@ -5,12 +5,38 @@ on:
     branches:
       - main
 
+
 jobs:
+
   ssh-test:
 
     runs-on: ubuntu-latest
 
     steps:
+
+      # 调试 Secret 是否读取成功
+      - name: Debug SSH Key
+        run: |
+          echo "Checking SSH key..."
+
+          if [ -z "${{ secrets.SERVER_SSH_KEY }}" ]; then
+            echo "❌ SERVER_SSH_KEY is empty"
+            exit 1
+          else
+            echo "✅ SERVER_SSH_KEY exists"
+          fi
+
+          echo "First line:"
+          echo "${{ secrets.SERVER_SSH_KEY }}" | head -n 1
+
+          echo "Last line:"
+          echo "${{ secrets.SERVER_SSH_KEY }}" | tail -n 1
+
+          echo "Key length:"
+          echo "${{ secrets.SERVER_SSH_KEY }}" | wc -c
+
+
+      # 测试 SSH
       - name: SSH Tencent Cloud
         uses: appleboy/ssh-action@master
 
@@ -23,3 +49,4 @@ jobs:
             echo "SSH success"
             whoami
             pwd
+            uname -a
