@@ -2,6 +2,7 @@ import { csrfHeaders } from '../api/auth.js'
 import { quickCheckFile, uploadFile } from '../api/files.js'
 import { MAX_FILE_SIZE, validateUpload } from '../preview/files.js'
 import { fileMd5 } from './md5.js'
+import { apiFetch, LONG_REQUEST_TIMEOUT_MS } from '../api/request.js'
 
 function sessionKey(userId, parentId, file, hash) {
   return 'chunk-session:' + JSON.stringify([userId, parentId, file.name, file.size, hash])
@@ -27,8 +28,8 @@ export async function listUploadedParts(identifier) {
   let totalParts
   for (;;) {
     const params = new URLSearchParams({ identifier, maxParts: '1000', partNumberMarker: String(marker) })
-    const response = await fetch(`/api/v1/files/file/chunk-upload?${params}`, {
-      credentials: 'same-origin', cache: 'no-store', headers: await csrfHeaders()
+    const response = await apiFetch(`/api/v1/files/file/chunk-upload?${params}`, {
+      credentials: 'same-origin', cache: 'no-store', headers: await csrfHeaders(), timeoutMs: LONG_REQUEST_TIMEOUT_MS
     })
     const result = await response.json().catch(() => null)
     if (!response.ok || result?.code !== 200) {
@@ -75,8 +76,8 @@ export async function uploadChunk({ file, session, fileHash, partNumber }) {
   form.append('fileMd5', fileHash)
   const offset = (partNumber - 1) * session.chunkSize
   form.append('chunk', file.slice(offset, Math.min(offset + session.chunkSize, file.size)), file.name)
-  const response = await fetch('/api/v1/files/file/chunk-upload', {
-    method: 'POST', credentials: 'same-origin', headers: await csrfHeaders(), body: form
+  const response = await apiFetch('/api/v1/files/file/chunk-upload', {
+    method: 'POST', credentials: 'same-origin', headers: await csrfHeaders(), body: form, timeoutMs: LONG_REQUEST_TIMEOUT_MS
   })
   const result = await response.json().catch(() => null)
   if (!response.ok || result?.code !== 200) {

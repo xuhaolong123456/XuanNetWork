@@ -23,14 +23,28 @@ const router = createRouter({
   ]
 })
 
-router.beforeEach(async to => {
-  let user = null
-  try {
-    user = await getCurrentUser()
-    localStorage.setItem('current_user', JSON.stringify(user))
-  } catch (error) {
-    if (error.status === 401) clearLoginSession()
+let currentUserRequest = null
+
+async function resolveCurrentUser() {
+  if (!currentUserRequest) {
+    currentUserRequest = getCurrentUser()
+      .then(user => {
+        localStorage.setItem('current_user', JSON.stringify(user))
+        return user
+      })
+      .catch(error => {
+        if (error.status === 401) clearLoginSession()
+        return null
+      })
+      .finally(() => { currentUserRequest = null })
   }
+  return currentUserRequest
+}
+
+router.beforeEach(async to => {
+  if (!to.meta.requiresAuth && !to.meta.guestOnly) return
+
+  const user = await resolveCurrentUser()
 
   if (to.meta.requiresAuth && !user) return '/login'
   if (to.meta.guestOnly && user) return '/drive'

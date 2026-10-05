@@ -25,22 +25,22 @@ public class RedisStartupHealthCheck implements SmartInitializingSingleton {
             try {
                 try (RedisConnection connection = redis.getConnectionFactory().getConnection()) {
                     connection.ping();
-                    log.info("Redis startup health check passed on attempt {}", attempt + 1);
+                    log.info("Redis 启动检查通过，第 {} 次尝试成功", attempt + 1);
                     return;
                 }
             } catch (RuntimeException exception) {
                 last = exception;
-                log.warn("Redis startup health check failed on attempt {}", attempt + 1);
+                log.warn("Redis 启动检查失败，第 {} 次尝试", attempt + 1);
                 if (attempt < backoffSeconds.length - 1) {
                     try {
                         Thread.sleep(backoffSeconds[attempt] * 1000L);
                     } catch (InterruptedException interrupted) {
                         Thread.currentThread().interrupt();
-                        throw new IllegalStateException("Redis startup health check interrupted", interrupted);
+                        throw new IllegalStateException("Redis 启动检查被中断", interrupted);
                     }
                 }
             }
         }
-        throw new IllegalStateException("Redis is required but unavailable; application startup stopped", last);
+        throw new IllegalStateException("Redis 为必需服务但当前不可用，应用停止启动", last);
     }
 }

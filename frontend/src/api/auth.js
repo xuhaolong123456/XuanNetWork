@@ -1,3 +1,5 @@
+import { apiFetch } from './request.js'
+
 let csrfToken = ''
 let csrfRequest = null
 
@@ -10,7 +12,7 @@ async function getCsrfToken(forceRefresh = false) {
   // 多个组件同时请求时共用一次签发，避免响应先后覆盖 Cookie。
   if (!csrfRequest) {
     csrfRequest = (async () => {
-      const response = await fetch('/api/v1/auth/csrf', { credentials: 'same-origin' })
+      const response = await apiFetch('/api/v1/auth/csrf', { credentials: 'same-origin' })
       const result = await response.json().catch(() => null)
       if (!response.ok || !result?.success) throw new Error(result?.message || '安全令牌获取失败，请刷新页面')
       csrfToken = result.data
@@ -32,7 +34,7 @@ export async function csrfHeaders() {
 
 export async function register(payload) {
   // 验证码随注册请求提交，最终以服务端校验结果为准。
-  const response = await fetch('/api/v1/auth/register', {
+  const response = await apiFetch('/api/v1/auth/register', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(await csrfHeaders()) },
     credentials: 'same-origin',
@@ -48,7 +50,7 @@ export async function register(payload) {
 
 export async function sendEmailCode(email) {
   // 前端不生成验证码，只负责调用后端发送接口。
-  const response = await fetch('/api/v1/auth/email-code', {
+  const response = await apiFetch('/api/v1/auth/email-code', {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...(await csrfHeaders()) },
     credentials: 'same-origin', body: JSON.stringify({ email })
   })
@@ -81,7 +83,7 @@ export function deviceId() {
 }
 
 export async function login(payload) {
-  const sendLogin = async () => fetch('/api/v1/auth/login', {
+  const sendLogin = async () => apiFetch('/api/v1/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Device-Id': deviceId(), ...(await csrfHeaders()) },
     credentials: 'same-origin',
@@ -113,7 +115,7 @@ export async function login(payload) {
 }
 
 export async function getCurrentUser() {
-  const response = await fetch('/api/v1/auth/me', { credentials: 'same-origin' })
+  const response = await apiFetch('/api/v1/auth/me', { credentials: 'same-origin' })
   const result = await response.json().catch(() => null)
   if (!response.ok || !result?.success) {
     const error = new Error(result?.message || '登录已失效，请重新登录')
@@ -125,7 +127,7 @@ export async function getCurrentUser() {
 }
 
 export async function getCaptcha(username) {
-  const response = await fetch(`/api/v1/auth/captcha?username=${encodeURIComponent(username)}`, {
+  const response = await apiFetch(`/api/v1/auth/captcha?username=${encodeURIComponent(username)}`, {
     headers: { 'X-Device-Id': deviceId() }
   })
   const result = await response.json().catch(() => null)
@@ -139,7 +141,7 @@ export async function getCaptcha(username) {
 }
 
 async function authenticatedPost(path, payload) {
-  const response = await fetch(path, {
+  const response = await apiFetch(path, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

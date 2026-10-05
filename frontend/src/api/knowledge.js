@@ -1,7 +1,8 @@
 import { csrfHeaders } from './auth.js'
+import { apiFetch } from './request.js'
 
 async function request(path, options = {}) {
-  const response = await fetch(`/api/knowledge${path}`, {
+  const response = await apiFetch(`/api/knowledge${path}`, {
     credentials: 'same-origin',
     ...options,
     headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...(options.headers || {}) }

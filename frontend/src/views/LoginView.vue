@@ -48,13 +48,19 @@ const submitting = ref(false)
 const errors = reactive({ username: '', password: '' })
 let lockTimer
 
-watch(username, () => {
+watch([username, password], () => {
   captchaCode.value = ''
   captchaImage.value = ''
 })
 
 async function refreshCaptcha() {
-  if (!username.value || captchaLoading.value) return
+  if (captchaLoading.value) return
+  if (!username.value || !password.value) {
+    messageType.value = 'error'
+    message.value = '请先输入用户名和密码'
+    return
+  }
+  message.value = ''
   captchaLoading.value = true
   try {
     const data = await getCaptcha(username.value)

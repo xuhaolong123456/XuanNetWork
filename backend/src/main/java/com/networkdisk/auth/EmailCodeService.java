@@ -4,6 +4,8 @@ import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
 import java.util.Base64;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import org.springframework.beans.factory.annotation.Value;
@@ -15,6 +17,7 @@ import org.springframework.stereotype.Service;
 /** 邮箱验证码业务层：协调 MySQL、Redis Lua 操作与同步 SMTP 发送。 */
 @Service
 public class EmailCodeService {
+    private static final Logger log = LoggerFactory.getLogger(EmailCodeService.class);
     private final EmailCodeRedisRepository redisRepository;
     private final UserRepository userRepository;
     private final JavaMailSender mailSender;
@@ -65,11 +68,14 @@ public class EmailCodeService {
             if (!redisRepository.completeSend(emailKey, codeDigest(email, code))) {
                 throw new AuthBusinessException("EMAIL_DAILY_LIMITED", "该邮箱今日验证码发送次数已达上限");
             }
+            log.info("邮箱注册验证码发送成功");
         } catch (MailException exception) {
             redisRepository.cancelSend(emailKey);
+            log.error("邮箱注册验证码发送失败", exception);
             throw new AuthBusinessException("MAIL_SEND_FAILED", "邮件服务发送失败，请稍后重试");
         } catch (RuntimeException exception) {
             redisRepository.cancelSend(emailKey);
+            log.error("邮箱注册验证码处理失败", exception);
             throw exception;
         }
     }
@@ -112,7 +118,7 @@ public class EmailCodeService {
         SimpleMailMessage mail = new SimpleMailMessage();
         if (from != null && !from.isBlank()) mail.setFrom(from.trim());
         mail.setTo(email);
-        mail.setSubject("NetworkDisk 注册验证码");
+        mail.setSubject("网盘注册验证码");
         mail.setText("你的注册验证码是：" + code + "\n验证码 60 秒内有效，请勿泄露给他人。");
         mailSender.send(mail);
     }

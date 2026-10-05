@@ -59,7 +59,7 @@ class DevAdminSeedTest {
 
         assertThatThrownBy(() -> seed.run(null))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("different password");
+                .hasMessageContaining("密码与配置不一致");
         verify(users, never()).save(any(User.class));
         verify(files, never()).save(any(UserFile.class));
     }

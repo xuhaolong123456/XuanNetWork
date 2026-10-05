@@ -1,9 +1,10 @@
 import { csrfHeaders } from './auth.js'
 import { validateUpload } from '../preview/files.js'
 import { fileMd5 } from '../upload/md5.js'
+import { apiFetch, LONG_REQUEST_TIMEOUT_MS } from './request.js'
 
 export async function listFolderTree() {
-  const response = await fetch('/api/v1/files/file/tree', {
+  const response = await apiFetch('/api/v1/files/file/tree', {
     credentials: 'same-origin', cache: 'no-store'
   })
   if (response.status === 204) return []
@@ -66,7 +67,7 @@ export async function uploadFile({ file, parentId = null, onProgress }) {
 export async function quickCheckFile({ file, parentId = null, fileHash: suppliedHash, onHashProgress, uploadId }) {
   validateUpload(file, { direct: false })
   const fileHash = suppliedHash || await fileMd5(file, onHashProgress)
-  const response = await fetch('/api/v1/files/quick-check', {
+  const response = await apiFetch('/api/v1/files/quick-check', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(await csrfHeaders()) },
     credentials: 'same-origin',
@@ -91,8 +92,8 @@ export async function quickCheckFile({ file, parentId = null, fileHash: supplied
 export async function downloadFile({ filename, fileId }) {
   const params = new URLSearchParams({ filename })
   if (fileId != null) params.set('fileId', String(fileId))
-  const response = await fetch(`/api/v1/files/file/download?${params}`, {
-    credentials: 'same-origin', cache: 'no-store'
+  const response = await apiFetch(`/api/v1/files/file/download?${params}`, {
+    credentials: 'same-origin', cache: 'no-store', timeoutMs: LONG_REQUEST_TIMEOUT_MS
   })
   if (!response.ok) {
     const result = await response.json().catch(() => null)
@@ -107,8 +108,9 @@ export async function downloadFile({ filename, fileId }) {
 }
 
 export async function downloadFiles(ids) {
-  const response = await fetch('/api/v1/files/files/download', {
+  const response = await apiFetch('/api/v1/files/files/download', {
     method: 'POST', credentials: 'same-origin', cache: 'no-store',
+    timeoutMs: LONG_REQUEST_TIMEOUT_MS,
     headers: { 'Content-Type': 'application/json', ...(await csrfHeaders()) },
     body: JSON.stringify({ ids })
   })
@@ -123,7 +125,7 @@ export async function downloadFiles(ids) {
 }
 
 export async function moveFiles(ids, targetParentId) {
-  const response = await fetch('/api/v1/files/move', {
+  const response = await apiFetch('/api/v1/files/move', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(await csrfHeaders()) },
     credentials: 'same-origin',
@@ -157,8 +159,8 @@ function saveBlob(blob, filename) {
 
 export async function previewFile(fileId, { signal } = {}) {
   const params = new URLSearchParams({ fileId: String(fileId) })
-  const response = await fetch(`/api/v1/files/file/preview?${params}`, {
-    credentials: 'same-origin', cache: 'no-store', signal
+  const response = await apiFetch(`/api/v1/files/file/preview?${params}`, {
+    credentials: 'same-origin', cache: 'no-store', signal, timeoutMs: null
   })
   const result = await response.json().catch(() => null)
   if (!response.ok || !result?.success) {
@@ -175,7 +177,7 @@ export async function listFiles({ parentId = null, page = 0, size = 50 } = {}) {
   if (parentId !== null && parentId !== undefined && parentId !== '') {
     params.set('parentId', String(parentId))
   }
-  const response = await fetch(`/api/v1/files?${params}`, { credentials: 'same-origin' })
+  const response = await apiFetch(`/api/v1/files?${params}`, { credentials: 'same-origin' })
   const result = await response.json().catch(() => null)
   if (!response.ok || !result?.success) {
     const error = new Error(result?.message || '文件列表加载失败，请稍后重试')
@@ -187,7 +189,7 @@ export async function listFiles({ parentId = null, page = 0, size = 50 } = {}) {
 }
 
 export async function createDirectory({ folderName, parentId = null }) {
-  const response = await fetch('/api/v1/files/directories', {
+  const response = await apiFetch('/api/v1/files/directories', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(await csrfHeaders()) },
     credentials: 'same-origin',
@@ -204,7 +206,7 @@ export async function createDirectory({ folderName, parentId = null }) {
 }
 
 export async function renameDirectory(directoryId, folderName) {
-  const response = await fetch(`/api/v1/files/directories/${encodeURIComponent(directoryId)}`, {
+  const response = await apiFetch(`/api/v1/files/directories/${encodeURIComponent(directoryId)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json', ...(await csrfHeaders()) },
     credentials: 'same-origin',
@@ -230,7 +232,7 @@ export const restoreFile = id => metadataOperation(`/recover/${encodeURIComponen
 export const restoreFiles = ids => metadataOperation('/recover/batch', 'PUT', { ids })
 
 async function metadataOperation(path, method, body) {
-  const response = await fetch(`/api/v1/files${path}`, {
+  const response = await apiFetch(`/api/v1/files${path}`, {
     method,
     headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(await csrfHeaders()) },
     credentials: 'same-origin',
@@ -249,7 +251,7 @@ async function metadataOperation(path, method, body) {
 
 export async function listTrash({ page = 0, size = 50 } = {}) {
   const params = new URLSearchParams({ page: String(page), size: String(size) })
-  const response = await fetch(`/api/v1/files/recycle-bin?${params}`, { credentials: 'same-origin' })
+  const response = await apiFetch(`/api/v1/files/recycle-bin?${params}`, { credentials: 'same-origin' })
   const result = await response.json().catch(() => null)
   if (!response.ok || !result?.success) {
     const error = new Error(result?.msg || result?.message || '回收站加载失败，请稍后重试')
@@ -269,8 +271,9 @@ async function uploadFileWithFetch({ file, parentId = null }) {
   const query = params.toString() ? `?${params}` : ''
   const form = new FormData()
   form.append('file', file)
-  const response = await fetch(`/api/v1/files/upload${query}`, {
+  const response = await apiFetch(`/api/v1/files/upload${query}`, {
     method: 'POST',
+    timeoutMs: LONG_REQUEST_TIMEOUT_MS,
     headers: await csrfHeaders(),
     credentials: 'same-origin',
     body: form

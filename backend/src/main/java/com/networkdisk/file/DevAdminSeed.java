@@ -38,18 +38,18 @@ public class DevAdminSeed implements ApplicationRunner {
     @Transactional
     public void run(ApplicationArguments args) {
         if (adminPassword.isBlank()) {
-            throw new IllegalStateException("Set APP_DEMO_ADMIN_PASSWORD before seeding the admin account");
+            throw new IllegalStateException("初始化管理员账号前必须设置 APP_DEMO_ADMIN_PASSWORD");
         }
 
         User admin = users.findByNickName("admin").orElseGet(() ->
                 users.save(new User(ADMIN_EMAIL, "admin", passwords.encode(adminPassword))));
         if (!passwords.matches(adminPassword, admin.getPasswordHash())) {
-            throw new IllegalStateException("Existing admin account has a different password; no data was changed");
+            throw new IllegalStateException("现有管理员账号密码与配置不一致，未修改任何数据");
         }
 
         if (!files.existsByOwner_IdAndParentIsNullAndName(admin.getId(), DEFAULT_FILE_NAME)) {
             files.save(new UserFile(admin, null, DEFAULT_FILE_NAME, FileNodeType.FILE, 0, "text/plain"));
         }
-        log.info("Development admin account and private sample file are ready (user id {})", admin.getId());
+        log.info("开发环境管理员账号和私有示例文件已就绪，用户编号：{}", admin.getId());
     }
 }

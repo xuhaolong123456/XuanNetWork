@@ -33,7 +33,7 @@ if not exist "%ROOT%frontend\node_modules" (
 )
 
 start "NetworkDisk Backend" /D "%ROOT%backend" cmd /k mvn spring-boot:run
-start "NetworkDisk Frontend" /D "%ROOT%frontend" cmd /k npm run dev
+start "NetworkDisk Frontend" /D "%ROOT%frontend" cmd /k "set HOST=127.0.0.1&& set API_TARGET=http://127.0.0.1:9090&& npm run dev"
 
 echo Backend:  http://localhost:9090
 echo Frontend: http://localhost:5173
