@@ -1,0 +1,31 @@
+spring:
+  datasource:
+    url: ${MYSQL_URL}
+    username: ${MYSQL_USERNAME}
+    password: ${MYSQL_PASSWORD}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  data:
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST:localhost}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
+      password: ${SPRING_DATA_REDIS_PASSWORD}
+      database: 1
+      timeout: 2s
+      connect-timeout: 2s
+  mail:
+    host: ${MAIL_HOST:smtp.qq.com}
+    port: ${MAIL_PORT:587}
+    username: ${MAIL_USERNAME:}
+    password: ${MAIL_PASSWORD:}
+    properties:
+      mail.smtp.auth: true
+      mail.smtp.starttls.enable: true
+
+app:
+  forwarded-ip.trusted: true
+  mail.enabled: ${MAIL_ENABLED:false}
+  mail.from: ${MAIL_FROM:}
+  redis.key-secret: ${APP_REDIS_KEY_SECRET}
+  auth:
+    token-secret: ${AUTH_TOKEN_SECRET}
+    cookie-secure: ${AUTH_COOKIE_SECURE:true}
