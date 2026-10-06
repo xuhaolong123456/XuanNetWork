@@ -20,7 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.mock.web.MockMultipartFile;
 
 @DataJpaTest(showSql = false)
-@Import(ChunkUploadService.class)
+@Import({ChunkUploadService.class, FileStorageService.class})
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
 class ChunkUploadConcurrencyTest {
     @TempDir static Path root;

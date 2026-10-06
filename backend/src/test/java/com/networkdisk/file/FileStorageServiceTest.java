@@ -132,7 +132,7 @@ class FileStorageServiceTest {
                     .isInstanceOf(FileBusinessException.class).extracting("status").isEqualTo(404);
         }
         Files.writeString(storageRoot.resolve("7/large"), "abcd");
-        org.assertj.core.api.Assertions.assertThatThrownBy(() -> storage.resolveDownload(7L, "7/large"))
-                .isInstanceOf(FileBusinessException.class).extracting("status").isEqualTo(413);
+        assertThat(storage.resolveDownload(7L, "7/large"))
+                .isEqualTo(storageRoot.resolve("7/large").toRealPath());
     }
 }

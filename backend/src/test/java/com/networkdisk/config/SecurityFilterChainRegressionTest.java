@@ -184,6 +184,34 @@ class SecurityFilterChainRegressionTest {
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value(400));
     }
 
+    @Test
+    void chunkMergeUsesNumericProtocolAndRequiresAuthenticationAndCsrf() throws Exception {
+        mvc.perform(post("/api/v1/files/file/chunk-upload/complete").param("uploadId", "upload-test"))
+                .andExpect(status().isUnauthorized()).andExpect(jsonPath("$.code").value(401));
+
+        String token = tokens.create(42L, "hash-one");
+        mvc.perform(post("/api/v1/files/file/chunk-upload/complete").cookie(new MockCookie(AuthCookie.NAME, token))
+                        .param("uploadId", "upload-test"))
+                .andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value(403));
+
+        when(fileService.mergeChunks(42L, "upload-test")).thenReturn(new FileItemResponse(91L, "large.txt",
+                FileNodeType.FILE, 3L * 1024 * 1024 * 1024, "application/octet-stream",
+                java.time.LocalDateTime.now()));
+        mvc.perform(post("/api/v1/files/file/chunk-upload/complete").with(csrfRequest(token))
+                        .param("uploadId", "upload-test"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.msg").value("分片合并成功"))
+                .andExpect(jsonPath("$.data.id").value(91))
+                .andExpect(jsonPath("$.data.name").value("large.txt"));
+        verify(fileService).mergeChunks(42L, "upload-test");
+
+        when(fileService.mergeChunks(42L, "upload-test")).thenThrow(
+                new org.springframework.dao.DataAccessResourceFailureException("test database outage"));
+        mvc.perform(post("/api/v1/files/file/chunk-upload/complete").with(csrfRequest(token))
+                        .param("uploadId", "upload-test"))
+                .andExpect(status().isServiceUnavailable()).andExpect(jsonPath("$.code").value(503));
+    }
+
     private final AtomicBoolean active = new AtomicBoolean(true);
     private final AtomicReference<User> user = new AtomicReference<>();
 

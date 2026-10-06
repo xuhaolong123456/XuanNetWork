@@ -316,7 +316,7 @@ class FileServiceTest {
         quickCheckService.setChunks(chunks);
         String md5 = "a".repeat(32);
         long size = 3 * 1024 * 1024 * 1024L;
-        when(chunks.resumeSession(7L, "upload-existing", "large.txt", size, md5))
+        when(chunks.resumeSession(7L, "upload-existing", "large.txt", size, md5, null))
                 .thenReturn(new ChunkUploadSession("upload-existing", 7, "large.txt", size, md5,
                         ChunkUploadService.CHUNK_SIZE, java.time.Instant.now(), null));
         QuickCheckResponse response = quickCheckService.quickCheck(7L,

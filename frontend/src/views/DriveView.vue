@@ -101,7 +101,7 @@
             <span class="upload-dropzone-icon" aria-hidden="true">↑</span>
             <strong>点击或拖动文件到此处上传</strong>
             <span>支持 .txt、.docx、.csv、.xlsx、.pdf、.md、.html、.pptx 类型文件</span>
-            <small>不超过 2 GiB 直接上传，较大文件分片上传；分片到齐后等待后续合并。刷新后重新选择相同文件可续传。</small>
+            <small>不超过 2 GiB 直接上传，较大文件分片上传；分片到齐后自动合并。刷新后重新选择相同文件可续传。</small>
           </div>
           <div v-if="selectedIds.length" class="selection-toolbar"><strong>已选 {{ selectedIds.length }} 项</strong><button type="button" :disabled="fileOperationBusy" @click="selectedIds = []">取消选择</button><button v-if="!isTrash" type="button" :disabled="fileOperationBusy || !downloadableSelection.length" :title="downloadableSelection.length ? '下载所选的可下载文件' : '所选项目没有可下载的文件'" @click="downloadSelected">批量下载</button><button v-if="!isTrash" type="button" :disabled="fileOperationBusy" @click="openMoveDialog">移动到</button><button type="button" :disabled="fileOperationBusy" @click="openBatchDialog">{{ isTrash ? '恢复所选' : '删除所选' }}</button></div>
           <div class="file-table-head"><input type="checkbox" aria-label="选择本页全部项目" :checked="items.length > 0 && selectedIds.length === items.length" :indeterminate="selectedIds.length > 0 && selectedIds.length < items.length" :disabled="fileOperationBusy || !items.length" @change="selectedIds = $event.target.checked ? items.map(item => item.id) : []" /><span>名称</span><span>{{ isTrash ? '删除时间' : '修改时间' }}</span><span>大小</span><span class="folder-action-heading">操作</span></div>
@@ -257,10 +257,10 @@ const breadcrumbs = computed(() => data.value?.breadcrumbs || [{ id: null, name:
 const currentTitle = computed(() => isTrash.value ? '回收站' : (data.value?.currentDirectory?.name || '我的文件'))
 const page = computed(() => data.value?.page || { number: 0, size: 50, totalElements: 0, totalPages: 0 })
 const fileOperationBusy = computed(() => loading.value || savingFolderName.value || deletingFolder.value || moving.value || uploading.value || downloading.value)
-const uploadCompletedCount = computed(() => uploadItems.value.filter(item => ['success', 'pendingMerge'].includes(item.status)).length)
+const uploadCompletedCount = computed(() => uploadItems.value.filter(item => item.status === 'success').length)
 
 function uploadStatusText(status) {
-  return { queued: '等待中', hashing: '计算完整文件指纹', uploading: '上传中', success: '上传成功', pendingMerge: '分片已到齐，待合并', error: '上传失败，可重新选择续传' }[status] || status
+  return { queued: '等待中', hashing: '计算完整文件指纹', uploading: '上传中', success: '上传成功', error: '上传失败，可重新选择续传' }[status] || status
 }
 
 function updateUploadItem(id, patch) {
@@ -650,7 +650,6 @@ async function uploadSelectedFiles(source) {
   let uploadedCount = 0
   let failedCount = 0
   let instantCount = 0
-  let pendingMergeCount = 0
   try {
     for (const [index, file] of selectedFiles.entries()) {
       const itemId = 'upload-' + batchId + '-' + index
@@ -661,11 +660,6 @@ async function uploadSelectedFiles(source) {
           onHashProgress: progress => updateUploadItem(itemId, { status: 'hashing', progress }),
           onProgress: progress => updateUploadItem(itemId, { status: 'uploading', progress })
         })
-        if (result.pendingMerge) {
-          pendingMergeCount += 1
-          updateUploadItem(itemId, { status: 'pendingMerge', progress: 100 })
-          continue
-        }
         if (result.instant) {
           instantCount += 1
         }
@@ -691,9 +685,6 @@ async function uploadSelectedFiles(source) {
             ? '上传成功：' + instantCount + ' 个文件秒传，' + (uploadedCount - instantCount) + ' 个文件已上传'
             : '上传成功：已上传 ' + uploadedCount + ' 个文件'
       await refreshFirstPage()
-    }
-    if (pendingMergeCount) {
-      fileOperationMessage.value = `${uploadedCount} 个文件上传成功，${pendingMergeCount} 个文件分片已到齐、待合并` + (failedCount ? `，${failedCount} 个失败` : '')
     }
   } finally {
     uploading.value = false

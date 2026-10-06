@@ -127,7 +127,17 @@ export async function uploadParts({ file, session, fileHash, onProgress, uploade
   await Promise.all([worker(), worker(), worker()])
   if (failure) throw failure
   if (!ready || finished.size !== session.totalParts) throw new Error('分片尚未全部就位，请重新选择文件续传')
-  return { pendingMerge: true, uploadId: session.uploadId }
+  const response = await apiFetch(`/api/v1/files/file/chunk-upload/complete?uploadId=${encodeURIComponent(session.uploadId)}`, {
+    method: 'POST', credentials: 'same-origin', headers: await csrfHeaders(), timeoutMs: LONG_REQUEST_TIMEOUT_MS
+  })
+  const result = await response.json().catch(() => null)
+  if (!response.ok || result?.code !== 200 || !result.data?.id) {
+    const error = new Error(result?.msg || '分片合并失败，请重新选择文件重试')
+    error.status = response.status
+    error.code = result?.code
+    throw error
+  }
+  return result.data
 }
 
 export async function uploadSelectedFile({ file, parentId = null, userId, onProgress, onHashProgress }) {
@@ -176,7 +186,11 @@ export async function uploadSelectedFile({ file, parentId = null, userId, onProg
   session = { uploadId: check.uploadId, chunkSize: check.chunkSize, totalParts: check.totalParts,
     createdAt: session?.createdAt || Date.now(), fileHash: hash, fileSize: file.size, fileName: file.name, parentFolderId: parentId }
   saveSession(key, session)
-  try { return await uploadParts({ file, session, fileHash: hash, onProgress, uploadedParts }) }
+  try {
+    const result = await uploadParts({ file, session, fileHash: hash, onProgress, uploadedParts })
+    removeSession(key)
+    return result
+  }
   catch (error) {
     if ([401, 40301].includes(Number(error.code)) || error.status === 401) removeSession(key)
     throw error

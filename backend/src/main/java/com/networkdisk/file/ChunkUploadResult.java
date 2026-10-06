@@ -5,7 +5,9 @@ import jakarta.servlet.http.HttpServletRequest;
 /** 分片接口遵循数字业务码协议，不改变既有接口的 Result 协议。 */
 public record ChunkUploadResult<T>(int code, String msg, T data) {
     public static boolean applies(HttpServletRequest request) {
-        return request.getRequestURI().equals(request.getContextPath() + "/api/v1/files/file/chunk-upload");
+        String base = request.getContextPath() + "/api/v1/files/file/chunk-upload";
+        String path = request.getRequestURI();
+        return path.equals(base) || path.equals(base + "/complete");
     }
 
     public static ChunkUploadResult<Void> failure(int code, String message) {

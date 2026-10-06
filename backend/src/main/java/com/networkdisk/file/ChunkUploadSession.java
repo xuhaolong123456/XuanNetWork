@@ -19,6 +19,7 @@ public class ChunkUploadSession {
     // 目标目录：合并出最终文件后，UserFile 记录要挂到哪个文件夹下（根目录为 null）。
     @Column(name = "parent_folder_id")
     private Long parentFolderId;
+    private Long mergedFileId;
 
     protected ChunkUploadSession() { }
 
@@ -42,5 +43,7 @@ public class ChunkUploadSession {
     public long getChunkSize() { return chunkSize; }
     public Instant getExpiresAt() { return expiresAt; }
     public Long getParentFolderId() { return parentFolderId; }
+    public Long getMergedFileId() { return mergedFileId; }
+    public void markMerged(long fileId) { this.mergedFileId = fileId; }
     public int getTotalParts() { return Math.toIntExact((sizeBytes - 1) / chunkSize + 1); }
 }

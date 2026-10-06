@@ -82,7 +82,7 @@ public class GlobalExceptionHandler {
                                                     HttpServletRequest request) {
         // 记录详细故障，但不把数据库结构或连接信息暴露给前端。
         log.error("数据库操作失败", exception);
-        if (ChunkUploadResult.isListParts(request)) {
+        if (ChunkUploadResult.applies(request)) {
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(ChunkUploadResult.failure(503, "服务暂时不可用"));
         }
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(FileOperationError.applies(request)
@@ -93,7 +93,7 @@ public class GlobalExceptionHandler {
     /** Redis 运行中断开时，验证码接口明确返回 503，不回退到本地内存。 */
     @ExceptionHandler(RedisConnectionFailureException.class)
     public ResponseEntity<?> handleRedisUnavailable(RedisConnectionFailureException exception, HttpServletRequest request) {
-        if (ChunkUploadResult.isListParts(request)) {
+        if (ChunkUploadResult.applies(request)) {
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(ChunkUploadResult.failure(503, "服务暂时不可用"));
         }
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)

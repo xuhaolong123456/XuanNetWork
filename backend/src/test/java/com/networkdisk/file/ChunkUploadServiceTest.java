@@ -12,6 +12,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.Optional;
+import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -53,6 +54,66 @@ class ChunkUploadServiceTest {
             assertThat(files.map(path -> path.getFileName().toString()).toList())
                     .containsExactlyInAnyOrder("1.part", "2.part", "3.part");
         }
+    }
+
+    @Test
+    void mergesOrderedPartsChecksFullMd5AndMakesCompletionRetrySafe() throws Exception {
+        String content = "abcdefghx";
+        String md5 = java.util.HexFormat.of().formatHex(
+                java.security.MessageDigest.getInstance("MD5").digest(content.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        ChunkUploadSession mergeSession = new ChunkUploadSession(ID, 7, "large.txt", content.length(), md5,
+                4, Instant.now().plusSeconds(3600), null);
+        when(sessions.findForUpdate(ID)).thenReturn(Optional.of(mergeSession));
+        when(parts.findActivePartNumbers(org.mockito.ArgumentMatchers.eq(ID), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(List.of(1, 2, 3));
+        service.upload(7L, "large.txt", "FILE", 9, ID, 3, md5, part("x"));
+        service.upload(7L, "large.txt", "FILE", 9, ID, 1, md5, part("abcd"));
+        service.upload(7L, "large.txt", "FILE", 9, ID, 2, md5, part("efgh"));
+
+        java.util.concurrent.atomic.AtomicInteger registrations = new java.util.concurrent.atomic.AtomicInteger();
+        Long fileId = service.merge(7, ID, (session, stored) -> {
+            registrations.incrementAndGet();
+            assertThat(session.getName()).isEqualTo("large.txt");
+            try { assertThat(Files.readString(root.resolve(stored.storageKey()))).isEqualTo(content); }
+            catch (IOException exception) { throw new AssertionError(exception); }
+            return 77L;
+        });
+
+        assertThat(fileId).isEqualTo(77L);
+        assertThat(mergeSession.getMergedFileId()).isEqualTo(77L);
+        assertThat(registrations).hasValue(1);
+        verify(parts).deleteByUploadId(ID);
+        assertThat(root.resolve("chunks").resolve(ID)).doesNotExist();
+        assertThat(service.merge(7, ID, (session, stored) -> {
+            registrations.incrementAndGet();
+            return 88L;
+        })).isEqualTo(77L);
+        assertThat(registrations).hasValue(1);
+    }
+
+    @Test
+    void rejectsMergeWhenPartsAreMissingOrNotContinuous() {
+        assertError("40301", () -> service.merge(8, ID, (session, stored) -> 1L));
+        when(parts.findActivePartNumbers(org.mockito.ArgumentMatchers.eq(ID), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(List.of(1, 3));
+        assertError("40901", () -> service.merge(7, ID, (session, stored) -> 1L));
+        when(parts.findActivePartNumbers(org.mockito.ArgumentMatchers.eq(ID), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(List.of(1, 2, 3));
+        assertError("40901", () -> service.merge(7, ID, (session, stored) -> 1L));
+    }
+
+    @Test
+    void rejectsCorruptMergedContentAndKeepsPartsForRetry() {
+        ChunkUploadSession badHashSession = session(Instant.now().plusSeconds(3600));
+        when(sessions.findForUpdate(ID)).thenReturn(Optional.of(badHashSession));
+        service.upload(7L, "large.txt", "FILE", 9, ID, 1, MD5, part("abcd"));
+        service.upload(7L, "large.txt", "FILE", 9, ID, 2, MD5, part("efgh"));
+        service.upload(7L, "large.txt", "FILE", 9, ID, 3, MD5, part("x"));
+
+        assertError("CHUNK_INTEGRITY_FAILED", () -> service.merge(7, ID, (session, stored) -> 1L));
+        assertThat(root.resolve("chunks").resolve(ID)).exists();
+        try (var blobs = Files.list(root.resolve("blobs"))) { assertThat(blobs.toList()).isEmpty(); }
+        catch (IOException exception) { throw new AssertionError(exception); }
     }
 
     @Test

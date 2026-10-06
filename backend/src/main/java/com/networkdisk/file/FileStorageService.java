@@ -71,6 +71,54 @@ public class FileStorageService {
         return new StoredFile(storageKey, name, file.getSize(), safeMimeType(file.getContentType()), hashes.sha256(), hashes.md5());
     }
 
+    public StoredFile mergeChunks(String name, long expectedSize, String expectedMd5, java.util.List<Path> chunks) {
+        String safeName = validateUploadName(name);
+        uploadFormatOf(safeName);
+        String storageKey = "blobs/" + UUID.randomUUID();
+        Path blobDirectory = root.resolve("blobs").normalize();
+        Path destination = root.resolve(storageKey).normalize();
+        Path temporary = null;
+        try {
+            Files.createDirectories(blobDirectory);
+            temporary = Files.createTempFile(blobDirectory, "merge-pending-", ".tmp");
+            MessageDigest sha256 = MessageDigest.getInstance("SHA-256");
+            MessageDigest md5 = MessageDigest.getInstance("MD5");
+            long written = 0;
+            try (var output = Files.newOutputStream(temporary)) {
+                byte[] buffer = new byte[8192];
+                for (Path chunk : chunks) {
+                    try (InputStream input = Files.newInputStream(chunk)) {
+                        int read;
+                        while ((read = input.read(buffer)) != -1) {
+                            written += read;
+                            if (written > expectedSize) throw new IOException("合并后文件超过会话声明大小");
+                            sha256.update(buffer, 0, read);
+                            md5.update(buffer, 0, read);
+                            output.write(buffer, 0, read);
+                        }
+                    }
+                }
+            }
+            String actualMd5 = hex(md5.digest());
+            if (written != expectedSize || !actualMd5.equalsIgnoreCase(expectedMd5)) {
+                throw new FileBusinessException("CHUNK_INTEGRITY_FAILED", "分片合并校验失败，请重新上传", 400);
+            }
+            Files.move(temporary, destination, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+            temporary = null;
+            return new StoredFile(storageKey, safeName, written, DEFAULT_MIME_TYPE,
+                    hex(sha256.digest()), actualMd5);
+        } catch (FileBusinessException exception) {
+            throw exception;
+        } catch (IOException | NoSuchAlgorithmException exception) {
+            throw new FileBusinessException("FILE_STORAGE_UNAVAILABLE", "分片合并写入磁盘失败", 503);
+        } finally {
+            if (temporary != null) {
+                try { Files.deleteIfExists(temporary); }
+                catch (IOException ignored) { }
+            }
+        }
+    }
+
     public void delete(String storageKey) {
         Path file = root.resolve(storageKey).normalize();
         if (!file.startsWith(root)) {
@@ -156,9 +204,6 @@ public class FileStorageService {
             Path realPath = path.toRealPath();
             if (!realPath.startsWith(realRoot)
                     || !Files.isRegularFile(realPath)) throw notFound();
-            if (Files.size(realPath) > maxFileSizeBytes) {
-                throw new FileBusinessException("FILE_TOO_LARGE", "文件大小超过允许上限", 413);
-            }
             return realPath;
         } catch (NoSuchFileException | InvalidPathException exception) {
             throw notFound();

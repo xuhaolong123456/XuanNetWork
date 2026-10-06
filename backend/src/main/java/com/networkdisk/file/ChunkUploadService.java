@@ -9,6 +9,8 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.UUID;
+import java.util.function.BiFunction;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -19,13 +21,21 @@ public class ChunkUploadService {
     public static final long CHUNK_SIZE = 8 * 1024 * 1024L;
     private final ChunkUploadSessionRepository sessions;
     private final ChunkUploadPartRepository parts;
+    private final FileStorageService storage;
     private final Path root;
 
+    @Autowired
     public ChunkUploadService(ChunkUploadSessionRepository sessions, ChunkUploadPartRepository parts,
-            @Value("${app.storage.root:./uploads}") Path storageRoot) {
+            FileStorageService storage, @Value("${app.storage.root:./uploads}") Path storageRoot) {
         this.sessions = sessions;
         this.parts = parts;
+        this.storage = storage;
         this.root = storageRoot.toAbsolutePath().normalize().resolve("chunks");
+    }
+
+    ChunkUploadService(ChunkUploadSessionRepository sessions, ChunkUploadPartRepository parts,
+            @Value("${app.storage.root:./uploads}") Path storageRoot) {
+        this(sessions, parts, new FileStorageService(storageRoot, 2147483648L), storageRoot);
     }
 
     // parentFolderId 记录目标目录，合并出最终文件时据此创建 UserFile。
@@ -43,13 +53,20 @@ public class ChunkUploadService {
 
     @Transactional
     public ChunkUploadSession resumeSession(long ownerId, String uploadId, String name, long sizeBytes, String fileMd5) {
+        return resumeSession(ownerId, uploadId, name, sizeBytes, fileMd5, null);
+    }
+
+    @Transactional
+    public ChunkUploadSession resumeSession(long ownerId, String uploadId, String name, long sizeBytes,
+            String fileMd5, Long parentFolderId) {
         if (uploadId == null || !uploadId.matches("upload-[0-9a-f-]{36}")) throw invalidSession();
         ChunkUploadSession session = sessions.findForUpdate(uploadId).orElseThrow(ChunkUploadService::invalidSession);
         // 秒传未命中后才能恢复会话，且必须重新校验归属和完整文件元数据。
         if (session.getOwnerId() != ownerId) throw error("40301", "用户越权操作，uploadId不属于当前用户", 403);
         if (!session.getExpiresAt().isAfter(Instant.now())) throw invalidSession();
         if (!session.getName().equals(name) || session.getSizeBytes() != sizeBytes
-                || !session.getFileMd5().equals(normalizeMd5(fileMd5))) {
+                || !session.getFileMd5().equals(normalizeMd5(fileMd5))
+                || !java.util.Objects.equals(session.getParentFolderId(), parentFolderId)) {
             throw error("40001", "分片元数据与上传会话不一致", 400);
         }
         return session;
@@ -119,6 +136,94 @@ public class ChunkUploadService {
                     org.slf4j.LoggerFactory.getLogger(getClass()).warn("分片临时文件清理失败", exception);
                 }
             }
+        }
+    }
+
+    @Transactional
+    public Long merge(long ownerId, String uploadId,
+            BiFunction<ChunkUploadSession, FileStorageService.StoredFile, Long> registerFile) {
+        if (uploadId == null || !uploadId.matches("upload-[0-9a-f-]{36}")) throw invalidSession();
+        // 会话行锁串行化合并、重试和过期清理，并在读取分片前验证所有权。
+        ChunkUploadSession session = sessions.findForUpdate(uploadId).orElseThrow(ChunkUploadService::invalidSession);
+        if (session.getOwnerId() != ownerId) throw error("40301", "无权操作该分片会话", 403);
+        if (session.getMergedFileId() != null) return session.getMergedFileId();
+        if (!session.getExpiresAt().isAfter(Instant.now())) throw invalidSession();
+
+        // 只接受完整连续的有效分片，避免合并遗漏或错序的数据。
+        List<Integer> finished = parts.findActivePartNumbers(uploadId, Instant.now());
+        if (finished.size() != session.getTotalParts()) throw error("40901", "分片尚未全部上传完成", 409);
+        Path directory = directory(uploadId);
+        java.util.ArrayList<Path> orderedChunks = new java.util.ArrayList<>(session.getTotalParts());
+        for (int number = 1; number <= session.getTotalParts(); number++) {
+            if (finished.get(number - 1) != number) throw error("40901", "分片序号不连续，无法合并", 409);
+            Path part = directory.resolve(number + ".part");
+            long expectedSize = number == session.getTotalParts()
+                    ? session.getSizeBytes() - (number - 1L) * session.getChunkSize() : session.getChunkSize();
+            try {
+                if (!Files.isRegularFile(part, LinkOption.NOFOLLOW_LINKS) || Files.size(part) != expectedSize) {
+                    throw error("40901", "分片文件缺失或长度异常，请重新上传", 409);
+                }
+            } catch (IOException exception) {
+                throw error("50001", "读取分片文件失败", 500);
+            }
+            orderedChunks.add(part);
+        }
+
+        FileStorageService.StoredFile merged = storage.mergeChunks(
+                session.getName(), session.getSizeBytes(), session.getFileMd5(), orderedChunks);
+        try {
+            Long fileId = registerFile.apply(session, merged);
+            session.markMerged(fileId);
+            parts.deleteByUploadId(uploadId);
+            // 文件记录与完成标记同事务提交；只在提交后回收分片，回滚时保留续传数据。
+            if (org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive()) {
+                org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                    new org.springframework.transaction.support.TransactionSynchronization() {
+                        @Override
+                        public void afterCompletion(int status) {
+                            if (status != org.springframework.transaction.support.TransactionSynchronization.STATUS_COMMITTED) {
+                                try { storage.delete(merged.storageKey()); }
+                                catch (RuntimeException ignored) { }
+                            }
+                        }
+
+                        @Override
+                        public void afterCommit() {
+                            try {
+                                if (Files.exists(directory, LinkOption.NOFOLLOW_LINKS)) {
+                                    try (var paths = Files.walk(directory)) {
+                                        for (Path path : paths.sorted(java.util.Comparator.reverseOrder()).toList()) {
+                                            Files.deleteIfExists(path);
+                                        }
+                                    }
+                                }
+                            } catch (IOException exception) {
+                                org.slf4j.LoggerFactory.getLogger(ChunkUploadService.class)
+                                        .warn("合并成功后的分片清理失败，等待会话过期清理：{}", uploadId, exception);
+                            }
+                        }
+                    });
+            } else {
+                deleteChunkDirectory(directory, uploadId);
+            }
+            return fileId;
+        } catch (RuntimeException exception) {
+            try { storage.delete(merged.storageKey()); }
+            catch (RuntimeException cleanupException) { exception.addSuppressed(cleanupException); }
+            throw exception;
+        }
+    }
+
+    private void deleteChunkDirectory(Path directory, String uploadId) {
+        try {
+            if (Files.exists(directory, LinkOption.NOFOLLOW_LINKS)) {
+                try (var paths = Files.walk(directory)) {
+                    for (Path path : paths.sorted(java.util.Comparator.reverseOrder()).toList()) Files.deleteIfExists(path);
+                }
+            }
+        } catch (IOException exception) {
+            org.slf4j.LoggerFactory.getLogger(ChunkUploadService.class)
+                    .warn("合并成功后的分片清理失败，等待会话过期清理：{}", uploadId, exception);
         }
     }
 

@@ -20,9 +20,13 @@ function respond(parts, partNumber, total = 3) {
     partNumber, finishedPartList: parts, mergeFlag: parts.length === total ? 1 : 0
   } })
 }
-function mockFetch(handler) {
+function mockFetch(handler, completeHandler) {
   globalThis.fetch = async (url, options) => url === '/api/v1/auth/csrf'
-    ? Response.json({ success: true, data: 'csrf-value' }) : handler(url, options)
+    ? Response.json({ success: true, data: 'csrf-value' })
+    : url.startsWith('/api/v1/files/file/chunk-upload/complete?')
+      ? (completeHandler ? completeHandler(url, options)
+        : Response.json({ code: 200, msg: '分片合并成功', data: { id: 42, name: 'large.txt' } }))
+      : handler(url, options)
 }
 
 test('incremental MD5 agrees with full MD5 across block and padding boundaries without reading the whole file', async () => {
@@ -72,7 +76,7 @@ test('resume trusts server part list, skips saved parts, and accepts the small l
     return respond([1, 2, 3], 3)
   })
   assert.deepEqual(await uploadParts({ file: file(), session, fileHash: 'a'.repeat(32), uploadedParts: [1, 2], onProgress: value => progress.push(value) }),
-    { pendingMerge: true, uploadId: session.uploadId })
+    { id: 42, name: 'large.txt' })
   assert.deepEqual(calls, [3])
   assert.equal(progress.at(-1), 100)
 })
@@ -111,6 +115,7 @@ test('large file miss persists backend session; reselection resumes and account 
   // 用虚拟文件验证阈值与会话编排，哈希正确性由独立边界测试覆盖。
   const large = { name: 'large.txt', size: MAX_FILE_SIZE + 1, slice: () => new Blob(['x']) }
   let checks = 0
+  let completeAttempts = 0
   const resumed = []
   mockFetch((url, options) => {
     if (url.includes('?identifier=')) return Response.json({ code: 200, data: {
@@ -123,8 +128,13 @@ test('large file miss persists backend session; reselection resumes and account 
     }
     assert.equal(url, '/api/v1/files/file/chunk-upload')
     return respond([1, 2], Number(options.body.get('partNumber')), 2)
+  }, () => {
+    completeAttempts++
+    return completeAttempts === 1
+      ? Response.json({ code: 50001, msg: '合并暂时失败', data: null }, { status: 500 })
+      : Response.json({ code: 200, msg: '分片合并成功', data: { id: 42, name: 'large.txt' } })
   })
-  assert.equal((await uploadSelectedFile({ file: large, userId: 7 })).pendingMerge, true)
+  await assert.rejects(uploadSelectedFile({ file: large, userId: 7 }), /合并暂时失败/)
   await uploadSelectedFile({ file: large, userId: 7 })
   assert.equal(checks, 2)
   assert.equal(resumed[1], 'upload-large')
@@ -200,8 +210,10 @@ test('expired resume starts fresh; auth and ownership errors clear cache; 503 pr
       }
       chunks++
       return respond([1, 2], Number(options.body.get('partNumber')), 2)
-    })
-    await uploadSelectedFile({ file: large, userId: 7 })
+    }, () => failing
+      ? Response.json({ code: 200, msg: '分片合并成功', data: { id: 42, name: 'large.txt' } })
+      : Response.json({ code: 50001, msg: '合并暂时失败', data: null }, { status: 500 }))
+    await assert.rejects(uploadSelectedFile({ file: large, userId: 7 }), /合并暂时失败/)
     const previousChunks = chunks
     failing = true
     if (code === 40001) {

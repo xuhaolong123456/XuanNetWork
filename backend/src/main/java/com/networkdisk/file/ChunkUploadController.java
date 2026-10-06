@@ -11,8 +11,12 @@ import org.springframework.web.multipart.MultipartFile;
 @RestController
 public class ChunkUploadController {
     private final ChunkUploadService chunks;
+    private final FileService files;
 
-    public ChunkUploadController(ChunkUploadService chunks) { this.chunks = chunks; }
+    public ChunkUploadController(ChunkUploadService chunks, FileService files) {
+        this.chunks = chunks;
+        this.files = files;
+    }
 
     @PostMapping(value = "/api/v1/files/file/chunk-upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ChunkUploadResult<ChunkUploadResponse> upload(@AuthenticationPrincipal Long userId,
@@ -22,5 +26,11 @@ public class ChunkUploadController {
             @RequestPart MultipartFile chunk) {
         return new ChunkUploadResult<>(200, "分片上传成功",
                 chunks.upload(userId, name, nodeType, sizeBytes, uploadId, partNumber, fileMd5, chunk));
+    }
+
+    @PostMapping("/api/v1/files/file/chunk-upload/complete")
+    public ChunkUploadResult<FileItemResponse> complete(@AuthenticationPrincipal Long userId,
+            @RequestParam String uploadId) {
+        return new ChunkUploadResult<>(200, "分片合并成功", files.mergeChunks(userId, uploadId));
     }
 }

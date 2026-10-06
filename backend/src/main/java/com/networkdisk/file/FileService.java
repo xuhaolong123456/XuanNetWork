@@ -207,6 +207,45 @@ public class FileService {
     }
 
     @Transactional
+    public FileItemResponse mergeChunks(long ownerId, String uploadId) {
+        // 与 quick-check 保持用户锁优先的顺序，避免并发合并和续传检查形成反向锁等待。
+        users.findByIdForUpdate(ownerId)
+                .orElseThrow(() -> new FileBusinessException("FILE_NOT_FOUND", "用户不存在", 404));
+        Long fileId = chunks.merge(ownerId, uploadId, this::registerMergedFile);
+        UserFile file = files.findByIdAndOwner_Id(fileId, ownerId)
+                .orElseThrow(() -> new FileBusinessException("FILE_NOT_FOUND", "合并后的文件记录不存在", 404));
+        return toItem(file);
+    }
+
+    private Long registerMergedFile(ChunkUploadSession session, FileStorageService.StoredFile stored) {
+        // 合并入库复用普通上传的用户锁、目录归属、重名处理和物理文件去重约束。
+        User owner = users.findByIdForUpdate(session.getOwnerId())
+                .orElseThrow(() -> new FileBusinessException("FILE_NOT_FOUND", "用户不存在", 404));
+        UserFile parent = session.getParentFolderId() == null
+                ? null : requireDirectoryForUpdate(session.getOwnerId(), session.getParentFolderId());
+        PhysicalFile physical;
+        Optional<PhysicalFile> existing = physicalFiles.findByFileHashAndFileSize(
+                stored.contentHash(), stored.sizeBytes());
+        if (existing.isPresent()) {
+            physical = existing.get();
+            storage.delete(stored.storageKey());
+        } else {
+            try {
+                physical = physicalFiles.saveAndFlush(new PhysicalFile(stored.contentHash(), stored.sizeBytes(),
+                        stored.storageKey(), stored.mimeType()));
+            } catch (DataIntegrityViolationException exception) {
+                physical = physicalFiles.findByFileHashAndFileSize(stored.contentHash(), stored.sizeBytes())
+                        .orElseThrow(() -> exception);
+                storage.delete(stored.storageKey());
+            }
+        }
+        if (stored.fileMd5() != null && !stored.fileMd5().isBlank()) physical.setFileMd5(stored.fileMd5());
+        String name = handleDuplicateFilename(session.getOwnerId(), session.getParentFolderId(),
+                stored.name(), FileNodeType.FILE, null);
+        return files.saveAndFlush(new UserFile(owner, parent, name, physical)).getId();
+    }
+
+    @Transactional
     public QuickCheckResponse quickCheck(long ownerId, QuickCheckRequest request) {
         String hash = normalizeHash(request.fileHash());
         String name = FileStorageService.validateUploadName(request.fileName());
@@ -215,6 +254,12 @@ public class FileService {
                 .orElseThrow(() -> new FileBusinessException("FILE_NOT_FOUND", "User not found", 404));
         UserFile parent = request.parentFolderId() == null
                 ? null : requireDirectoryForUpdate(ownerId, request.parentFolderId());
+        ChunkUploadSession resumedSession = request.uploadId() == null ? null
+                : chunks.resumeSession(ownerId, request.uploadId(), name, request.fileSize(), hash,
+                        request.parentFolderId());
+        if (resumedSession != null && resumedSession.getMergedFileId() != null) {
+            return new QuickCheckResponse(true, resumedSession.getMergedFileId());
+        }
         // 命中后只新增用户文件视图，绝不再次写入磁盘或接收文件二进制。
         boolean md5 = hash.length() == 32;
         Optional<PhysicalFile> existing = md5
@@ -224,9 +269,9 @@ public class FileService {
             // 仅大文件且使用完整 MD5 时建立会话，秒传命中绝不创建分片会话。
             if (md5 && request.fileSize() > 2 * 1024 * 1024 * 1024L) {
                 // 会话绑定目标目录，合并时把最终文件落到该目录下。
-                ChunkUploadSession session = request.uploadId() == null
+                ChunkUploadSession session = resumedSession == null
                         ? chunks.createSession(ownerId, name, request.fileSize(), hash, request.parentFolderId())
-                        : chunks.resumeSession(ownerId, request.uploadId(), name, request.fileSize(), hash);
+                        : resumedSession;
                 return new QuickCheckResponse(false, null, session.getId(), session.getChunkSize(), session.getTotalParts());
             }
             return new QuickCheckResponse(false, null);
