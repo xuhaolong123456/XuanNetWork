@@ -53,6 +53,18 @@ class EmailCodeServiceTest {
     }
 
     @Test
+    void shouldFailClearlyWhenMailIsDisabled() {
+        EmailCodeService disabledService = new EmailCodeService(redisRepository, userRepository, mailSender,
+                "sender@qq.com", false, "dGVzdC1obWFjLXNlY3JldA==");
+
+        assertThatThrownBy(() -> disabledService.send("user@example.com", "127.0.0.1"))
+                .isInstanceOf(AuthBusinessException.class)
+                .hasMessage("邮件服务未启用，请联系管理员");
+        verify(redisRepository, never()).beginSend(anyString(), anyString());
+        verify(mailSender, never()).send(org.mockito.ArgumentMatchers.any(org.springframework.mail.SimpleMailMessage.class));
+    }
+
+    @Test
     void shouldConsumeCodeOnlyAfterSuccessfulRegistration() {
         RegisterRequest request = new RegisterRequest("user@example.com", "user001", "123456", null, "123456");
         when(redisRepository.beginRegister(anyString(), anyString())).thenReturn(
