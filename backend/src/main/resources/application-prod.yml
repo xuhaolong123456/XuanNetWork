@@ -23,7 +23,7 @@ spring:
 
 app:
   forwarded-ip.trusted: true
-  mail.enabled: ${MAIL_ENABLED:false}
+  mail.enabled: ${MAIL_ENABLED:true}
   mail.from: ${MAIL_FROM:}
   redis.key-secret: ${APP_REDIS_KEY_SECRET}
   auth:
