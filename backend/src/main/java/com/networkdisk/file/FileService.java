@@ -358,26 +358,75 @@ public class FileService {
 
     @Transactional(readOnly = true)
     public List<FileDownload> downloadMany(long ownerId, List<Long> ids) {
-        if (ids == null || ids.isEmpty() || ids.size() > 50 || ids.stream().anyMatch(id -> id == null || id <= 0)) {
-            throw new FileBusinessException("INVALID_PARAM", "请选择最多 50 个文件", 400);
+        if (ids == null || ids.isEmpty() || ids.size() > 1000 || ids.stream().anyMatch(id -> id == null || id <= 0)) {
+            throw new FileBusinessException("INVALID_PARAM", "请选择需要下载的文件或文件夹", 400);
         }
-        List<Long> uniqueIds = ids.stream().distinct().toList();
-        List<FileDownload> downloads = new ArrayList<>();
-        long totalSize = 0;
-        for (Long id : uniqueIds) {
-            UserFile file = files.findByIdAndOwner_Id(id, ownerId)
-                    .filter(node -> node.getNodeType() == FileNodeType.FILE && !node.isDeleted()
-                            && node.isDownloadAllowed() && node.isPreviewAllowed())
+        ArrayList<FileDownload> downloads = new ArrayList<>();
+        ArrayDeque<DownloadNode> pending = new ArrayDeque<>();
+        Set<Long> visited = new HashSet<>();
+        Set<String> rootNames = new HashSet<>();
+        for (Long id : ids.stream().distinct().toList()) {
+            UserFile node = files.findByIdAndOwner_Id(id, ownerId)
                     .orElseThrow(() -> new FileBusinessException("FILE_NOT_FOUND", "资源不存在", 404));
-            Path path = storage.resolveDownload(ownerId, file.getStorageKey());
-            totalSize += file.getSizeBytes();
-            if (totalSize > 1073741824L) {
-                throw new FileBusinessException("FILE_TOO_LARGE", "批量下载总大小不能超过 1 GiB", 413);
+            String baseName = safeArchiveName(node.getName());
+            String rootName = baseName;
+            for (int suffix = 1; !rootNames.add(rootName); suffix++) {
+                rootName = withNumberSuffix(baseName, suffix, node.getNodeType() == FileNodeType.FILE);
             }
-            downloads.add(new FileDownload(file.getName(), path));
+            pending.addLast(new DownloadNode(node, rootName));
         }
+        long totalSize = 0;
+        int visitedCount = 0;
+        while (!pending.isEmpty()) {
+            DownloadNode current = pending.removeFirst();
+            UserFile node = current.node();
+            if (!visited.add(node.getId())) {
+                throw new FileBusinessException("DIRECTORY_TREE_INVALID", "文件夹结构异常", 409);
+            }
+            if (++visitedCount > 1000) throw tooManyContents();
+            if (node.getNodeType() == FileNodeType.DIRECTORY) {
+                downloads.add(new FileDownload(current.entryName() + "/", null));
+                int page = 0;
+                org.springframework.data.domain.Page<UserFile> children;
+                do {
+                    children = files.findActiveChildren(ownerId, node.getId(), PageRequest.of(page++, 101));
+                    for (UserFile child : children.getContent()) {
+                        String childName = safeArchiveName(child.getName());
+                        pending.addLast(new DownloadNode(child, current.entryName() + "/" + childName));
+                    }
+                    if (pending.size() + visitedCount > 1000 || children.getTotalElements() > 1000) {
+                        throw tooManyContents();
+                    }
+                } while (children.hasNext());
+                continue;
+            }
+            if (!node.isDownloadAllowed() || !node.isPreviewAllowed()) {
+                throw new FileBusinessException("FILE_NOT_FOUND", "资源不存在", 404);
+            }
+            if (node.getSizeBytes() > 1073741824L - totalSize) {
+                throw new FileBusinessException("TOO_MANY_CONTENTS", "内容过多，请重新选择下载", 413);
+            }
+            totalSize += node.getSizeBytes();
+            downloads.add(new FileDownload(current.entryName(), storage.resolveDownload(ownerId, node.getStorageKey())));
+        }
+        if (downloads.isEmpty()) throw new FileBusinessException("TOO_MANY_CONTENTS", "所选内容中没有可下载的文件", 400);
         return List.copyOf(downloads);
     }
+
+    private static FileBusinessException tooManyContents() {
+        return new FileBusinessException("TOO_MANY_CONTENTS", "内容过多，请重新选择下载", 413);
+    }
+
+    private static String safeArchiveName(String name) {
+        String safe = name == null ? "" : name.replace('\\', '/').trim();
+        if (safe.isBlank() || safe.equals(".") || safe.equals("..") || safe.contains("/")
+                || safe.chars().anyMatch(character -> character < 32 || ":\"|?*".indexOf(character) >= 0)) {
+            throw new FileBusinessException("INVALID_FILE_NAME", "压缩包内文件名无效");
+        }
+        return safe;
+    }
+
+    private record DownloadNode(UserFile node, String entryName) { }
 
     public record FileDownload(String name, Path path) {
     }

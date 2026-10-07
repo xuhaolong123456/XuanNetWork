@@ -103,7 +103,7 @@
             <span>支持 .txt、.docx、.csv、.xlsx、.pdf、.md、.html、.pptx 类型文件</span>
             <small>不超过 2 GiB 直接上传，较大文件分片上传；分片到齐后自动合并。刷新后重新选择相同文件可续传。</small>
           </div>
-          <div v-if="selectedIds.length" class="selection-toolbar"><strong>已选 {{ selectedIds.length }} 项</strong><button type="button" :disabled="fileOperationBusy" @click="selectedIds = []">取消选择</button><button v-if="!isTrash" type="button" :disabled="fileOperationBusy || !downloadableSelection.length" :title="downloadableSelection.length ? '下载所选的可下载文件' : '所选项目没有可下载的文件'" @click="downloadSelected">批量下载</button><button v-if="!isTrash" type="button" :disabled="fileOperationBusy" @click="openMoveDialog">移动到</button><button type="button" :disabled="fileOperationBusy" @click="openBatchDialog">{{ isTrash ? '恢复所选' : '删除所选' }}</button></div>
+          <div v-if="selectedIds.length" class="selection-toolbar"><strong>已选 {{ selectedIds.length }} 项</strong><button type="button" :disabled="fileOperationBusy" @click="selectedIds = []">取消选择</button><button v-if="!isTrash" type="button" :disabled="fileOperationBusy || !downloadableSelection.length" :title="downloadableSelection.length ? '压缩下载所选文件或文件夹' : '所选项目没有可下载的内容'" @click="downloadSelected">批量下载</button><button v-if="!isTrash" type="button" :disabled="fileOperationBusy" @click="openMoveDialog">移动到</button><button type="button" :disabled="fileOperationBusy" @click="openBatchDialog">{{ isTrash ? '恢复所选' : '删除所选' }}</button></div>
           <div class="file-table-head"><input type="checkbox" aria-label="选择本页全部项目" :checked="items.length > 0 && selectedIds.length === items.length" :indeterminate="selectedIds.length > 0 && selectedIds.length < items.length" :disabled="fileOperationBusy || !items.length" @change="selectedIds = $event.target.checked ? items.map(item => item.id) : []" /><span>名称</span><span>{{ isTrash ? '删除时间' : '修改时间' }}</span><span>大小</span><span class="folder-action-heading">操作</span></div>
 
           <div v-if="loading" class="file-state" role="status">正在加载文件列表…</div>
@@ -252,7 +252,8 @@ const uploadItems = ref([])
 const fileOperationMessage = ref('')
 const fileOperationError = ref(false)
 const items = computed(() => data.value?.items || [])
-const downloadableSelection = computed(() => items.value.filter(item => selectedIds.value.includes(item.id) && canDownload(item)))
+const downloadableSelection = computed(() => items.value.filter(item => selectedIds.value.includes(item.id)
+  && (item.type === 'DIRECTORY' || canDownload(item))))
 const breadcrumbs = computed(() => data.value?.breadcrumbs || [{ id: null, name: '我的文件' }])
 const currentTitle = computed(() => isTrash.value ? '回收站' : (data.value?.currentDirectory?.name || '我的文件'))
 const page = computed(() => data.value?.page || { number: 0, size: 50, totalElements: 0, totalPages: 0 })
@@ -297,8 +298,9 @@ async function downloadSelected() {
   fileOperationError.value = false
   fileOperationMessage.value = ''
   try {
-    await downloadFiles(chosen.map(item => item.id))
-    fileOperationMessage.value = `已开始下载 ${chosen.length} 个文件的 ZIP 压缩包${skipped ? `，跳过 ${skipped} 项不可下载内容` : ''}`
+    const archiveName = chosen.length === 1 ? chosen[0].name : 'files'
+    await downloadFiles(chosen.map(item => item.id), archiveName)
+    fileOperationMessage.value = `已开始下载 ${chosen.length} 项内容的 ZIP 压缩包${skipped ? `，跳过 ${skipped} 项不可下载内容` : ''}`
   } catch (error) {
     fileOperationError.value = true
     fileOperationMessage.value = error.message

@@ -107,21 +107,21 @@ export async function downloadFile({ filename, fileId }) {
   saveBlob(blob, filename)
 }
 
-export async function downloadFiles(ids) {
+export async function downloadFiles(ids, downloadName = 'files') {
   const response = await apiFetch('/api/v1/files/files/download', {
     method: 'POST', credentials: 'same-origin', cache: 'no-store',
     timeoutMs: LONG_REQUEST_TIMEOUT_MS,
     headers: { 'Content-Type': 'application/json', ...(await csrfHeaders()) },
-    body: JSON.stringify({ ids })
+    body: JSON.stringify({ ids, downloadName })
   })
   if (!response.ok) {
     const result = await response.json().catch(() => null)
-    const error = new Error(response.status === 404 ? '资源不存在' : '下载失败，请稍后重试')
+    const error = new Error(result?.msg || result?.message || (response.status === 404 ? '资源不存在' : '下载失败，请稍后重试'))
     error.status = response.status
     error.code = result?.code
     throw error
   }
-  saveBlob(await response.blob(), 'files.zip')
+  saveBlob(await response.blob(), `${downloadName || 'files'}.zip`)
 }
 
 export async function moveFiles(ids, targetParentId) {

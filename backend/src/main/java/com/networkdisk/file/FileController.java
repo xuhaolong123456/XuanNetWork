@@ -35,11 +35,15 @@ import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBo
 public class FileController {
     private final FileService files;
     private final FileTrashService trash;
+    private DownloadArchiveService archives;
 
     public FileController(FileService files, FileTrashService trash) {
         this.files = files;
         this.trash = trash;
     }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setArchives(DownloadArchiveService archives) { this.archives = archives; }
 
     @GetMapping
     public Result<FileListResponse> list(@AuthenticationPrincipal Long userId,
@@ -92,27 +96,19 @@ public class FileController {
 
     @PostMapping("/files/download")
     public org.springframework.http.ResponseEntity<StreamingResponseBody> downloadMany(
-            @AuthenticationPrincipal Long userId, @Valid @RequestBody FileIdsRequest request) {
+            @AuthenticationPrincipal Long userId, @Valid @RequestBody DownloadRequest request) {
         List<FileService.FileDownload> downloads = files.downloadMany(userId, request.ids());
+        DownloadArchiveService.PreparedArchive archive = archives.create(userId, request.downloadName(), downloads);
         StreamingResponseBody body = output -> {
-            Set<String> names = new HashSet<>();
-            try (ZipOutputStream zip = new ZipOutputStream(output, StandardCharsets.UTF_8)) {
-                for (FileService.FileDownload download : downloads) {
-                    String name = download.name();
-                    for (int suffix = 1; !names.add(name); suffix++) {
-                        name = FileService.withNumberSuffix(download.name(), suffix, true);
-                    }
-                    zip.putNextEntry(new ZipEntry(name));
-                    Files.copy(download.path(), zip);
-                    zip.closeEntry();
-                }
-            }
+            try (var input = Files.newInputStream(archive.path())) { input.transferTo(output); }
+            finally { archives.cleanup(archive.taskDirectory()); }
         };
         return org.springframework.http.ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_DISPOSITION,
-                        ContentDisposition.attachment().filename("files.zip").build().toString())
+                        ContentDisposition.attachment().filename(archive.filename(), StandardCharsets.UTF_8).build().toString())
                 .header(HttpHeaders.CACHE_CONTROL, "no-store")
-                .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                .contentType(MediaType.parseMediaType("application/zip"))
+                .contentLength(archive.path().toFile().length())
                 .body(body);
     }
 

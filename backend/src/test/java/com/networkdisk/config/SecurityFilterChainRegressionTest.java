@@ -69,7 +69,8 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 @WebMvcTest(controllers = {SecurityFilterChainRegressionTest.TestController.class, AuthController.class, FileController.class,
-        com.networkdisk.file.ChunkUploadController.class, com.networkdisk.file.ListPartsController.class})
+        com.networkdisk.file.ChunkUploadController.class, com.networkdisk.file.ListPartsController.class,
+        com.networkdisk.file.DownloadArchiveService.class})
 @Import({SecurityConfig.class, SecurityFilterChainRegressionTest.TestBeans.class,
         SecurityFilterChainRegressionTest.TestController.class, AuthController.class, FileController.class,
         com.networkdisk.file.ChunkUploadController.class, com.networkdisk.file.ListPartsController.class})
@@ -489,7 +490,7 @@ class SecurityFilterChainRegressionTest {
 
     @Test
     void batchDownloadRequiresAuthenticationAndStreamsZip(@TempDir Path directory) throws Exception {
-        String body = "{\"ids\":[12,13]}";
+        String body = "{\"ids\":[12,13],\"downloadName\":\"files\"}";
         mvc.perform(post("/api/v1/files/files/download").with(csrfRequest(null))
                         .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isUnauthorized());
@@ -508,7 +509,7 @@ class SecurityFilterChainRegressionTest {
         MvcResult completed = mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
                         .asyncDispatch(pending))
                 .andExpect(status().isOk())
-                .andExpect(header().string("Content-Disposition", "attachment; filename=\"files.zip\""))
+                .andExpect(header().string("Content-Disposition", org.hamcrest.Matchers.containsString("files.zip")))
                 .andReturn();
         try (var zip = new java.util.zip.ZipInputStream(
                 new java.io.ByteArrayInputStream(completed.getResponse().getContentAsByteArray()), StandardCharsets.UTF_8)) {

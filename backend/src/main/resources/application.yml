@@ -20,6 +20,8 @@ app:
   storage:
     root: ${FILE_STORAGE_ROOT:./uploads}
     max-file-size-bytes: ${FILE_MAX_SIZE_BYTES:2147483648}
+    download-temp-root: ${DOWNLOAD_TEMP_ROOT:./download-tmp}
+    download-cleanup-delay-ms: ${DOWNLOAD_CLEANUP_DELAY_MS:3600000}
   mail.enabled: ${MAIL_ENABLED:true}
   login:
     fail-lock-threshold: ${LOGIN_FAIL_LOCK_THRESHOLD:5}

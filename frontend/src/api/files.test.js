@@ -73,7 +73,7 @@ test('batch download posts selected ids with CSRF and saves one ZIP', async () =
       assert.equal(url, '/api/v1/files/files/download')
       assert.equal(options.method, 'POST')
       assert.equal(options.headers['X-XSRF-TOKEN'], 'csrf-value')
-      assert.deepEqual(JSON.parse(options.body), { ids: [12, 13] })
+      assert.deepEqual(JSON.parse(options.body), { ids: [12, 13], downloadName: 'files' })
       return new Response('archive')
     }
     await downloadFiles([12, 13])
