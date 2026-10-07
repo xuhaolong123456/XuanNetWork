@@ -2,6 +2,7 @@
 *.log
 backend/logs/
 uploads/
+docs/
 
 # === 前端（Vite / npm） ===
 node_modules/
