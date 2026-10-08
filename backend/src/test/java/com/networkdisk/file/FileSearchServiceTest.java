@@ -14,6 +14,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.elasticsearch.core.ElasticsearchOperations;
+import org.springframework.data.elasticsearch.core.query.Query;
 
 class FileSearchServiceTest {
     @Test
@@ -44,6 +45,6 @@ class FileSearchServiceTest {
                 .containsExactly(new FileSearchResponse.HighlightSegment("代码", false),
                         new FileSearchResponse.HighlightSegment("随想录", true),
                         new FileSearchResponse.HighlightSegment("-笔记.txt", false));
-        verify(elasticsearch, never()).search(any(), eq(FileSearchDocument.class));
+        verify(elasticsearch, never()).search(any(Query.class), eq(FileSearchDocument.class));
     }
 }
