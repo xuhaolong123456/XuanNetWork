@@ -1,22 +1,54 @@
 services:
   mysql:
     image: mysql:8.4
+    networks:
+      - app-network
     restart: unless-stopped
+    # 开启 binlog 供 Canal 订阅（ROW 格式 + 完整行镜像）；已存在数据卷重启容器即生效。
+    command:
+      - --server-id=1
+      - --log-bin=mysql-bin
+      - --binlog-format=ROW
+      - --binlog-row-image=FULL
+      - --binlog-expire-logs-seconds=604800
     environment:
       MYSQL_DATABASE: ${MYSQL_DATABASE:-network_disk}
       MYSQL_USER: ${MYSQL_USER:-networkdisk}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:?请在.env中设置MYSQL_PASSWORD}
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?请在.env中设置MYSQL_ROOT_PASSWORD}
+      CANAL_DB_USERNAME: ${CANAL_DB_USERNAME:-canal}
+      CANAL_DB_PASSWORD: ${CANAL_DB_PASSWORD:?请在.env中设置CANAL_DB_PASSWORD}
     volumes:
       - mysql-data:/var/lib/mysql
+      - ./mysql/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
       interval: 10s
       timeout: 5s
       retries: 12
 
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.19.23
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    networks:
+      - elasticsearch-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+
   redis:
     image: redis:7-alpine
+    networks:
+      - app-network
     restart: unless-stopped
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?请在.env中设置REDIS_PASSWORD}
@@ -29,7 +61,36 @@ services:
       timeout: 5s
       retries: 12
 
+  canal-server:
+    image: canal/canal-server:v1.1.8
+    networks:
+      - app-network
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      CANAL_DB_HOST: mysql
+      CANAL_DB_PORT: "3306"
+      CANAL_DB_USERNAME: ${CANAL_DB_USERNAME:-canal}
+      CANAL_DB_PASSWORD: ${CANAL_DB_PASSWORD:?请在.env中设置CANAL_DB_PASSWORD}
+    # 11111 为 Canal TCP 订阅端口，供后端/客户端消费；若只在 compose 内部使用可移除该映射。
+    ports:
+      - "11111:11111"
+    # 用默认的 example 实例，仅改写 MySQL 连接地址与账号密码后启动。
+    entrypoint:
+      - sh
+      - -c
+      - |
+        sed -i "s|^canal.instance.master.address=.*|canal.instance.master.address=$$CANAL_DB_HOST:$$CANAL_DB_PORT|" /home/admin/canal-server/conf/example/instance.properties
+        sed -i "s|^canal.instance.dbUsername=.*|canal.instance.dbUsername=$$CANAL_DB_USERNAME|" /home/admin/canal-server/conf/example/instance.properties
+        sed -i "s|^canal.instance.dbPassword=.*|canal.instance.dbPassword=$$CANAL_DB_PASSWORD|" /home/admin/canal-server/conf/example/instance.properties
+        exec /home/admin/canal-server/bin/startup.sh
+
   backend:
+    networks:
+      - app-network
+      - elasticsearch-network
     build:
       context: .
       dockerfile: Dockerfile
@@ -52,6 +113,7 @@ services:
       MAIL_PASSWORD: ${MAIL_PASSWORD:-}
       MAIL_FROM: ${MAIL_FROM:-}
       FILE_STORAGE_ROOT: /app/uploads
+      SPRING_ELASTICSEARCH_URIS: http://elasticsearch:9200
     volumes:
       - uploads-data:/app/uploads
     depends_on:
@@ -59,8 +121,12 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
 
   frontend:
+    networks:
+      - app-network
     build:
       context: .
       dockerfile: frontend/Dockerfile
@@ -73,4 +139,10 @@ services:
 volumes:
   mysql-data:
   redis-data:
+  elasticsearch-data:
   uploads-data:
+
+networks:
+  app-network:
+  elasticsearch-network:
+    internal: true

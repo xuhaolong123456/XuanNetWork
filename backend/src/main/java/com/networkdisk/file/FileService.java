@@ -28,9 +28,15 @@ public class FileService {
     private final FileStorageService storage;
     private final PhysicalFileRepository physicalFiles;
     private ChunkUploadService chunks;
+    private SearchIndexCoordinator searchIndex;
 
     @org.springframework.beans.factory.annotation.Autowired
     public void setChunks(ChunkUploadService chunks) { this.chunks = chunks; }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setSearchIndex(SearchIndexCoordinator searchIndex) { this.searchIndex = searchIndex; }
+
+    private void markSearchDirty(long ownerId) { if (searchIndex != null) searchIndex.markDirty(ownerId); }
 
     public FileService(UserFileRepository files, UserRepository users, FileStorageService storage) {
         this(files, users, storage, null);
@@ -86,7 +92,9 @@ public class FileService {
             parent = requireDirectoryForUpdate(ownerId, parentId);
         }
         String uniqueName = handleDuplicateFilename(ownerId, parentId, name, FileNodeType.DIRECTORY, null);
-        return toItem(files.save(new UserFile(owner, parent, uniqueName, FileNodeType.DIRECTORY)));
+        UserFile saved = files.save(new UserFile(owner, parent, uniqueName, FileNodeType.DIRECTORY));
+        markSearchDirty(ownerId);
+        return toItem(saved);
     }
 
     @Transactional
@@ -105,6 +113,7 @@ public class FileService {
             throw new FileBusinessException("NAME_CONFLICT", "同一目录中已存在相同名称", 409);
         }
         directory.rename(name);
+        markSearchDirty(ownerId);
         return toItem(directory);
     }
 
@@ -146,6 +155,7 @@ public class FileService {
             node.moveTo(target);
             moved.add(toItem(node));
         }
+        if (!moved.isEmpty()) markSearchDirty(ownerId);
         return moved;
     }
 
@@ -187,7 +197,9 @@ public class FileService {
                     ? new UserFile(owner, parent, name, FileNodeType.FILE,
                             stored.sizeBytes(), stored.mimeType(), stored.storageKey())
                     : new UserFile(owner, parent, name, physical);
-            return toItem(files.save(node));
+            UserFile saved = files.save(node);
+            markSearchDirty(ownerId);
+            return toItem(saved);
         } catch (RuntimeException exception) {
             // 元数据保存失败时清理刚写入磁盘的内容，避免产生无法查询的孤立文件。
             try {
@@ -242,7 +254,9 @@ public class FileService {
         if (stored.fileMd5() != null && !stored.fileMd5().isBlank()) physical.setFileMd5(stored.fileMd5());
         String name = handleDuplicateFilename(session.getOwnerId(), session.getParentFolderId(),
                 stored.name(), FileNodeType.FILE, null);
-        return files.saveAndFlush(new UserFile(owner, parent, name, physical)).getId();
+        UserFile saved = files.saveAndFlush(new UserFile(owner, parent, name, physical));
+        markSearchDirty(session.getOwnerId());
+        return saved.getId();
     }
 
     @Transactional
@@ -279,6 +293,7 @@ public class FileService {
 
         String uniqueName = handleDuplicateFilename(ownerId, request.parentFolderId(), name, FileNodeType.FILE, null);
         UserFile saved = files.save(new UserFile(owner, parent, uniqueName, existing.get()));
+        markSearchDirty(ownerId);
         return new QuickCheckResponse(true, saved.getId());
     }
 

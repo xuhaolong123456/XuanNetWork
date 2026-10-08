@@ -21,6 +21,7 @@ jmeter-results/
 
 # === 本机开发配置（含数据库/邮箱/Redis 密码） ===
 application-dev.yml
+.env
 
 # === IDE / 系统 ===
 .idea/

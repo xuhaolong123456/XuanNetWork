@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createDirectory, deleteDirectory, deleteFile, deleteFiles, downloadFile, downloadFiles, listFolderTree, moveFiles, restoreFile, restoreFiles, listTrash, listFiles, renameDirectory, quickCheckFile, uploadFile, previewFile } from './files.js'
+import { createDirectory, deleteDirectory, deleteFile, deleteFiles, downloadFile, downloadFiles, listFolderTree, searchFiles, moveFiles, restoreFile, restoreFiles, listTrash, listFiles, renameDirectory, quickCheckFile, uploadFile, previewFile } from './files.js'
 
 test('folder tree reads current user hierarchy and handles 204 and 404', async () => {
   globalThis.fetch = async (url, options) => {
@@ -346,5 +346,24 @@ test('reports browser upload progress through XMLHttpRequest', async () => {
     assert.deepEqual(result, { id: 10, name: 'notes.txt' })
   } finally {
     globalThis.XMLHttpRequest = originalXHR
+  }
+})
+
+
+test('search sends current-folder scope and unwraps the shared result shape', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (url, options = {}) => {
+    assert.equal(new URL(url, 'http://localhost').pathname, '/api/v1/files/search')
+    const params = new URL(url, 'http://localhost').searchParams
+    assert.equal(params.get('q'), '随想录')
+    assert.equal(params.get('parentId'), '9')
+    assert.equal(options.credentials, 'same-origin')
+    return Response.json({ success: true, data: { items: [{ id: 12, name: '代码随想录.txt' }], page: { number: 0 } } })
+  }
+  try {
+    const result = await searchFiles({ keyword: '随想录', parentId: 9 })
+    assert.equal(result.items[0].id, 12)
+  } finally {
+    globalThis.fetch = originalFetch
   }
 })

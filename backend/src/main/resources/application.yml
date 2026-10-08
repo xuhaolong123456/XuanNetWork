@@ -1,6 +1,8 @@
 spring:
   application:
     name: network-disk-backend
+  elasticsearch:
+    uris: ${SPRING_ELASTICSEARCH_URIS:http://localhost:9200}
   profiles:
     default: dev
   jpa:

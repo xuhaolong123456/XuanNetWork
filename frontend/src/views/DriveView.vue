@@ -63,6 +63,11 @@
         <section class="file-section">
           <div class="section-heading">
             <div><h2>{{ currentTitle }}</h2><p>个人网盘</p></div>
+            <label v-if="!isTrash" class="drive-search">
+              <span aria-hidden="true">⌕</span>
+              <input v-model="searchInput" type="search" maxlength="128" placeholder="搜索当前文件夹" aria-label="搜索当前文件夹中的文件和子文件夹" />
+              <button v-if="searchInput" type="button" aria-label="清空搜索" @click="searchInput = ''">×</button>
+            </label>
             <div v-if="!isTrash" class="file-actions">
               <button class="folder-create-button" type="button" :disabled="fileOperationBusy" @click="openFolderDialog">新建文件夹</button>
               <button class="drive-upload" type="button" :disabled="fileOperationBusy" @click="chooseUpload"><span>＋</span>上传文件</button>
@@ -106,13 +111,13 @@
           <div v-if="selectedIds.length" class="selection-toolbar"><strong>已选 {{ selectedIds.length }} 项</strong><button type="button" :disabled="fileOperationBusy" @click="selectedIds = []">取消选择</button><button v-if="!isTrash" type="button" :disabled="fileOperationBusy || !downloadableSelection.length" :title="downloadableSelection.length ? '压缩下载所选文件或文件夹' : '所选项目没有可下载的内容'" @click="downloadSelected">批量下载</button><button v-if="!isTrash" type="button" :disabled="fileOperationBusy" @click="openMoveDialog">移动到</button><button type="button" :disabled="fileOperationBusy" @click="openBatchDialog">{{ isTrash ? '恢复所选' : '删除所选' }}</button></div>
           <div class="file-table-head"><input type="checkbox" aria-label="选择本页全部项目" :checked="items.length > 0 && selectedIds.length === items.length" :indeterminate="selectedIds.length > 0 && selectedIds.length < items.length" :disabled="fileOperationBusy || !items.length" @change="selectedIds = $event.target.checked ? items.map(item => item.id) : []" /><span>名称</span><span>{{ isTrash ? '删除时间' : '修改时间' }}</span><span>大小</span><span class="folder-action-heading">操作</span></div>
 
-          <div v-if="loading" class="file-state" role="status">正在加载文件列表…</div>
-          <div v-else-if="errorMessage" class="file-state error" role="alert">{{ errorMessage }}<button type="button" @click="loadFiles">重试</button></div>
+          <div v-if="listLoading" class="file-state" role="status">{{ searchMode ? '正在搜索…' : '正在加载文件列表…' }}</div>
+          <div v-else-if="listError" class="file-state error" role="alert">{{ listError }}<button type="button" @click="searchMode ? runSearch() : loadFiles()">重试</button></div>
           <div v-else-if="items.length" class="file-list">
             <div v-for="item in items" :key="item.id" class="file-row" :class="{ selected: selectedIds.includes(item.id) }" @click="activateItem(item)">
               <input v-model="selectedIds" type="checkbox" :value="item.id" :aria-label="`选择 ${item.name}`" :disabled="fileOperationBusy" @click.stop />
               <button class="file-entry" type="button" @click.stop="activateItem(item)">
-                <span class="file-name"><span class="file-icon" :class="item.type.toLowerCase()">{{ item.type === 'DIRECTORY' ? '📁' : '📄' }}</span><strong>{{ item.name }}<small v-if="isTrash" class="trash-origin">原目录：{{ item.parentName }}</small></strong></span>
+                <span class="file-name"><span class="file-icon" :class="item.type.toLowerCase()">{{ item.type === 'DIRECTORY' ? '📁' : '📄' }}</span><strong><template v-if="searchMode && item.highlight"><span v-for="(segment, index) in item.highlight" :key="index" :class="{ 'search-match': segment.matched }">{{ segment.text }}</span></template><template v-else>{{ item.name }}</template><small v-if="isTrash" class="trash-origin">原目录：{{ item.parentName }}</small></strong></span>
                 <span class="file-date">{{ formatDate(isTrash ? item.deletedAt : item.updatedAt) }}</span>
                 <span class="file-size">{{ item.type === 'DIRECTORY' ? '—' : formatSize(item.sizeBytes) }}</span>
               </button>
@@ -127,10 +132,10 @@
           </div>
           <div v-else class="file-state empty-state">
             <div class="empty-art"><div class="folder-back"></div><div class="folder-front"><span>＋</span></div><span class="empty-spark spark-a">✦</span><span class="empty-spark spark-b">✦</span></div>
-            <h3>{{ isTrash ? '回收站是空的' : '这个目录还没有文件' }}</h3>
-            <p>文件和文件夹会显示在这里。</p>
+            <h3>{{ searchMode ? '没有找到匹配内容' : (isTrash ? '回收站是空的' : '这个目录还没有文件') }}</h3>
+            <p>{{ searchMode ? '试试更短的关键词，或清空搜索查看全部内容。' : '文件和文件夹会显示在这里。' }}</p>
           </div>
-          <div v-if="!loading && page.totalPages > 1" class="file-pagination">
+          <div v-if="!listLoading && page.totalPages > 1" class="file-pagination">
             <button type="button" :disabled="page.number === 0" @click="changePage(page.number - 1)">上一页</button>
             <span>第 {{ page.number + 1 }} / {{ page.totalPages }} 页 · 共 {{ page.totalElements }} 项</span>
             <button type="button" :disabled="page.number + 1 >= page.totalPages" @click="changePage(page.number + 1)">下一页</button>
@@ -190,7 +195,7 @@ import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { changePassword, clearLoginSession, logout } from '../api/auth'
 import FileTreeNode from '../components/FileTreeNode.vue'
-import { createDirectory, deleteFile, deleteFiles, downloadFile, downloadFiles, listFolderTree, moveFiles, restoreFile, restoreFiles, listTrash, listFiles, renameDirectory } from '../api/files'
+import { createDirectory, deleteFile, deleteFiles, downloadFile, downloadFiles, listFolderTree, moveFiles, restoreFile, restoreFiles, listTrash, listFiles, renameDirectory, searchFiles } from '../api/files'
 import { uploadSelectedFile } from '../upload/upload.js'
 import { isLoginExpired } from '../preview/files.js'
 
@@ -251,12 +256,20 @@ const downloading = ref(false)
 const uploadItems = ref([])
 const fileOperationMessage = ref('')
 const fileOperationError = ref(false)
-const items = computed(() => data.value?.items || [])
+const searchInput = ref('')
+const searchData = ref(null)
+const searchPageNumber = ref(0)
+const searchLoading = ref(false)
+const searchError = ref('')
+const searchMode = computed(() => !isTrash.value && Boolean(searchInput.value.trim()))
+const listLoading = computed(() => loading.value || (searchMode.value && searchLoading.value))
+const listError = computed(() => searchMode.value ? searchError.value : errorMessage.value)
+const items = computed(() => searchMode.value ? (searchData.value?.items || []) : (data.value?.items || []))
 const downloadableSelection = computed(() => items.value.filter(item => selectedIds.value.includes(item.id)
   && (item.type === 'DIRECTORY' || canDownload(item))))
 const breadcrumbs = computed(() => data.value?.breadcrumbs || [{ id: null, name: '我的文件' }])
 const currentTitle = computed(() => isTrash.value ? '回收站' : (data.value?.currentDirectory?.name || '我的文件'))
-const page = computed(() => data.value?.page || { number: 0, size: 50, totalElements: 0, totalPages: 0 })
+const page = computed(() => (searchMode.value ? searchData.value?.page : data.value?.page) || { number: 0, size: 50, totalElements: 0, totalPages: 0 })
 const fileOperationBusy = computed(() => loading.value || savingFolderName.value || deletingFolder.value || moving.value || uploading.value || downloading.value)
 const uploadCompletedCount = computed(() => uploadItems.value.filter(item => item.status === 'success').length)
 
@@ -312,6 +325,54 @@ async function downloadSelected() {
 let latestListRequest = 0
 
 watch(() => [route.query.parentId, route.query.page, route.query.view], loadFiles, { immediate: true })
+
+let searchRequestId = 0
+let searchDebounceTimer = null
+let searchAbortController = null
+watch(searchInput, () => { searchPageNumber.value = 0 })
+watch(() => [searchInput.value, route.query.parentId, route.query.view, searchPageNumber.value], () => {
+  clearTimeout(searchDebounceTimer)
+  searchAbortController?.abort()
+  const requestId = ++searchRequestId
+  const keyword = searchInput.value.trim()
+  if (!keyword || isTrash.value) {
+    searchData.value = null
+    searchError.value = ''
+    searchLoading.value = false
+    return
+  }
+  selectedIds.value = []
+  searchLoading.value = true
+  searchError.value = ''
+  searchDebounceTimer = setTimeout(() => runSearch(requestId), 300)
+})
+
+async function runSearch(expectedRequestId = searchRequestId) {
+  const keyword = searchInput.value.trim()
+  if (!keyword || isTrash.value || expectedRequestId !== searchRequestId) return
+  const requestId = ++searchRequestId
+  searchAbortController?.abort()
+  const controller = new AbortController()
+  searchAbortController = controller
+  searchLoading.value = true
+  searchError.value = ''
+  try {
+    searchData.value = await searchFiles({
+      keyword,
+      parentId: typeof route.query.parentId === 'string' ? route.query.parentId : null,
+      page: searchPageNumber.value,
+      size: 20,
+      signal: controller.signal
+    })
+  } catch (error) {
+    if (controller.signal.aborted || requestId !== searchRequestId) return
+    searchError.value = error.message
+    if (error.status === 401) handleFileMutationError(error)
+  } finally {
+    if (requestId === searchRequestId) searchLoading.value = false
+  }
+}
+watch(() => route.query.parentId, () => { searchPageNumber.value = 0 })
 watch(() => route.query.parentId, parentId => {
   selectedTreeNodeId.value = typeof parentId === 'string' ? parentId : 'root'
 }, { immediate: true })
@@ -399,6 +460,7 @@ async function loadFiles() {
 }
 
 function openDirectory(id) {
+  searchInput.value = ''
   router.push({ path: '/drive', query: id == null ? {} : { parentId: String(id) } })
 }
 
@@ -409,6 +471,7 @@ function activateItem(item) {
 }
 
 function changePage(number) {
+  if (searchMode.value) { searchPageNumber.value = number; return }
   router.push({ path: '/drive', query: { ...route.query, page: String(number) } })
 }
 

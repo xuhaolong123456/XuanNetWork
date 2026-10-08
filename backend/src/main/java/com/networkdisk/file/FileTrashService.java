@@ -21,12 +21,18 @@ public class FileTrashService {
     private final UserFileRepository files;
     private final UserRepository users;
     private final FileService fileService;
+    private SearchIndexCoordinator searchIndex;
 
     public FileTrashService(UserFileRepository files, UserRepository users, FileService fileService) {
         this.files = files;
         this.users = users;
         this.fileService = fileService;
     }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setSearchIndex(SearchIndexCoordinator searchIndex) { this.searchIndex = searchIndex; }
+
+    private void markSearchDirty(long ownerId) { if (searchIndex != null) searchIndex.markDirty(ownerId); }
 
     @Transactional(readOnly = true)
     public TrashListResponse list(long ownerId, int page, int size) {
@@ -68,6 +74,7 @@ public class FileTrashService {
                 afterId = children.getLast().id();
             }
         }
+        markSearchDirty(ownerId);
     }
 
     @Transactional
@@ -100,6 +107,7 @@ public class FileTrashService {
                 }
             }
         }
+        markSearchDirty(ownerId);
     }
 
     private void restoreAncestors(long ownerId, TrashNode node, Set<Long> visited) {

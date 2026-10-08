@@ -22,6 +22,14 @@ public interface UserFileRepository extends JpaRepository<UserFile, Long> {
     @Query("select f from UserFile f where f.owner.id = :ownerId and f.parent.id = :parentId and f.deleted = false order by f.name, f.id")
     org.springframework.data.domain.Page<UserFile> findActiveChildren(@Param("ownerId") Long ownerId, @Param("parentId") Long parentId, Pageable pageable);
 
+    Page<UserFile> findByOwner_IdAndDeletedFalse(Long ownerId, Pageable pageable);
+
+    Page<UserFile> findByOwner_IdAndParent_IdAndDeletedFalseAndNameContainingIgnoreCase(
+            Long ownerId, Long parentId, String name, Pageable pageable);
+
+    Page<UserFile> findByOwner_IdAndParentIsNullAndDeletedFalseAndNameContainingIgnoreCase(
+            Long ownerId, String name, Pageable pageable);
+
     @Query("select f from UserFile f where f.id = :id and f.owner.id = :ownerId and f.deleted = false")
     Optional<UserFile> findByIdAndOwner_Id(@Param("id") Long id, @Param("ownerId") Long ownerId);
 
