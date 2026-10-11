@@ -85,7 +85,9 @@ services:
         sed -i "s|^canal.instance.master.address=.*|canal.instance.master.address=$$CANAL_DB_HOST:$$CANAL_DB_PORT|" /home/admin/canal-server/conf/example/instance.properties
         sed -i "s|^canal.instance.dbUsername=.*|canal.instance.dbUsername=$$CANAL_DB_USERNAME|" /home/admin/canal-server/conf/example/instance.properties
         sed -i "s|^canal.instance.dbPassword=.*|canal.instance.dbPassword=$$CANAL_DB_PASSWORD|" /home/admin/canal-server/conf/example/instance.properties
-        exec /home/admin/canal-server/bin/startup.sh
+        rm -f /home/admin/canal-server/bin/canal.pid /home/admin/canal-server/canal.pid
+        /home/admin/canal-server/bin/startup.sh
+        exec tail -F /home/admin/canal-server/logs/canal/canal.log
 
   backend:
     networks:
@@ -114,6 +116,11 @@ services:
       MAIL_FROM: ${MAIL_FROM:-}
       FILE_STORAGE_ROOT: /app/uploads
       SPRING_ELASTICSEARCH_URIS: http://elasticsearch:9200
+      APP_SEARCH_CANAL_ENABLED: "true"
+      APP_SEARCH_CANAL_HOST: canal-server
+      APP_SEARCH_CANAL_PORT: 11111
+      APP_SEARCH_CANAL_DESTINATION: example
+      APP_SEARCH_CANAL_FILTER: ${CANAL_TABLE_FILTER:-network_disk\.user_file}
     volumes:
       - uploads-data:/app/uploads
     depends_on:

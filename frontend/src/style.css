@@ -225,10 +225,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visibl
 .menu-logout { color: #a44d42; background: #f8ece8; }
 .drive-main { min-width: 0; }
 .drive-topbar { height: 69px; display: flex; align-items: center; gap: 22px; border-bottom: 1px solid var(--line); padding: 0 clamp(25px, 5vw, 72px); background: #fbfaf6; }
+.topbar-search { margin-left: auto; }
+.topbar-search + .top-account-name { margin-left: 0; }
 .breadcrumb { display: flex; align-items: center; gap: 11px; color: #9aa197; font-size: 11px; white-space: nowrap; }
 .breadcrumb strong { color: #3c5144; font-weight: 700; }
 .breadcrumb-slash { color: #c7c9bf; }
-.drive-search { display: flex; align-items: center; gap: 9px; width: min(300px, 42%); margin-left: auto; border: 1px solid #e8e6de; border-radius: 7px; padding: 8px 11px; color: #89948a; background: #fffefa; }
+.drive-search { display: flex; align-items: center; gap: 9px; width: min(300px, 42%); border: 1px solid #e8e6de; border-radius: 7px; padding: 8px 11px; color: #89948a; background: #fffefa; }
 .drive-search span { font-size: 17px; line-height: 14px; }
 .drive-search input { width: 100%; border: 0; outline: 0; color: #344c3d; background: transparent; font-size: 11px; }
 .drive-search input::placeholder { color: #a0a79f; }
@@ -263,7 +265,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visibl
 .drive-search:focus-within { border-color: #91a991; box-shadow: 0 0 0 3px rgb(91 126 97 / 10%); }
 .drive-search input { width: 100%; min-width: 0; border: 0; outline: 0; color: #304538; background: transparent; font: inherit; font-size: 12px; }
 .drive-search button { border: 0; color: #78847a; background: transparent; font-size: 18px; cursor: pointer; }
-.search-match { color: #245a32; background: #e6f3d6; border-radius: 2px; }
+.search-highlight-html :deep(mark) { color: #245a32; background: #e6f3d6; border-radius: 2px; }
 
 .file-actions { display: flex; align-items: center; gap: 8px; }
 .file-actions .drive-upload { margin: 0; box-shadow: none; }
@@ -409,7 +411,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visibl
   .user-avatar { width: 32px; height: 32px; }
   .drive-topbar { height: 52px; gap: 9px; padding: 0 15px; }
   .breadcrumb { gap: 7px; font-size: 10px; }
-  .drive-search { width: 37%; padding: 7px 8px; }
+  .topbar-search { width: 37%; min-width: 0; padding: 7px 8px; }
   .drive-search input { font-size: 10px; }
   .top-account-name { margin-left: auto; font-size: 10px; }
   .top-avatar { display: none; }

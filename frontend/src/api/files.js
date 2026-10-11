@@ -172,9 +172,8 @@ export async function previewFile(fileId, { signal } = {}) {
   return result.data
 }
 
-export async function searchFiles({ keyword, parentId = null, page = 0, size = 20, signal } = {}) {
+export async function searchFiles({ keyword, page = 0, size = 20, signal } = {}) {
   const params = new URLSearchParams({ q: keyword, page: String(page), size: String(size) })
-  if (parentId !== null && parentId !== undefined && parentId !== '') params.set('parentId', String(parentId))
   const response = await apiFetch('/api/v1/files/search?' + params, {
     credentials: 'same-origin', cache: 'no-store', signal
   })

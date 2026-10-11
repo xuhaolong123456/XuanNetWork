@@ -350,19 +350,20 @@ test('reports browser upload progress through XMLHttpRequest', async () => {
 })
 
 
-test('search sends current-folder scope and unwraps the shared result shape', async () => {
+test('search can query the whole drive and unwraps the shared result shape', async () => {
   const originalFetch = globalThis.fetch
   globalThis.fetch = async (url, options = {}) => {
     assert.equal(new URL(url, 'http://localhost').pathname, '/api/v1/files/search')
     const params = new URL(url, 'http://localhost').searchParams
     assert.equal(params.get('q'), '随想录')
-    assert.equal(params.get('parentId'), '9')
+    assert.equal(params.has('parentId'), false)
     assert.equal(options.credentials, 'same-origin')
-    return Response.json({ success: true, data: { items: [{ id: 12, name: '代码随想录.txt' }], page: { number: 0 } } })
+    return Response.json({ success: true, data: { items: [{ id: 12, name: '代码随想录.txt', highlightHtml: '代码<mark>随想录</mark>.txt' }], page: { number: 0 } } })
   }
   try {
-    const result = await searchFiles({ keyword: '随想录', parentId: 9 })
+    const result = await searchFiles({ keyword: '随想录' })
     assert.equal(result.items[0].id, 12)
+    assert.equal(result.items[0].highlightHtml, '代码<mark>随想录</mark>.txt')
   } finally {
     globalThis.fetch = originalFetch
   }

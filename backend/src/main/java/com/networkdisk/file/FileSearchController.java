@@ -16,9 +16,9 @@ public class FileSearchController {
 
     @GetMapping("/search")
     public Result<FileSearchResponse> search(@AuthenticationPrincipal Long userId,
-            @RequestParam String q, @RequestParam(required = false) Long parentId,
+            @RequestParam String q,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
-        return Result.success(search.search(userId, q, parentId, page, size));
+        return Result.success(search.search(userId, q, page, size));
     }
 }

@@ -11,8 +11,11 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.domain.Specification;
+import jakarta.persistence.criteria.Predicate;
 
-public interface UserFileRepository extends JpaRepository<UserFile, Long> {
+public interface UserFileRepository extends JpaRepository<UserFile, Long>,
+        org.springframework.data.jpa.repository.JpaSpecificationExecutor<UserFile> {
     @Query("select f from UserFile f where f.owner.id = :ownerId and f.parent is null and f.deleted = false")
     Page<UserFile> findByOwner_IdAndParentIsNull(@Param("ownerId") Long ownerId, Pageable pageable);
 
@@ -24,11 +27,27 @@ public interface UserFileRepository extends JpaRepository<UserFile, Long> {
 
     Page<UserFile> findByOwner_IdAndDeletedFalse(Long ownerId, Pageable pageable);
 
-    Page<UserFile> findByOwner_IdAndParent_IdAndDeletedFalseAndNameContainingIgnoreCase(
-            Long ownerId, Long parentId, String name, Pageable pageable);
+    Page<UserFile> findAllByDeletedFalse(Pageable pageable);
 
-    Page<UserFile> findByOwner_IdAndParentIsNullAndDeletedFalseAndNameContainingIgnoreCase(
-            Long ownerId, String name, Pageable pageable);
+    @Query("select f from UserFile f where f.owner.id = :ownerId and f.deleted = false "
+            + "and lower(f.name) like lower(concat('%', :keyword, '%')) escape '\\'")
+    Page<UserFile> searchActiveByOwnerAndName(@Param("ownerId") Long ownerId,
+            @Param("keyword") String keyword, Pageable pageable);
+
+    default Page<UserFile> searchActiveByOwnerAndAnyNameTerm(Long ownerId, List<String> terms, Pageable pageable) {
+        Specification<UserFile> specification = (root, query, builder) -> {
+            Predicate[] nameMatches = terms.stream().map(term -> builder.like(
+                    builder.lower(root.get("name")), "%" + escapeLike(term.toLowerCase(java.util.Locale.ROOT)) + "%", '\\'))
+                    .toArray(Predicate[]::new);
+            return builder.and(builder.equal(root.get("owner").get("id"), ownerId),
+                    builder.isFalse(root.get("deleted")), builder.or(nameMatches));
+        };
+        return findAll(specification, pageable);
+    }
+
+    private static String escapeLike(String value) {
+        return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_");
+    }
 
     @Query("select f from UserFile f where f.id = :id and f.owner.id = :ownerId and f.deleted = false")
     Optional<UserFile> findByIdAndOwner_Id(@Param("id") Long id, @Param("ownerId") Long ownerId);

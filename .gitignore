@@ -23,6 +23,11 @@ jmeter-results/
 application-dev.yml
 .env
 
+# === 本机 Docker 开发配置 ===
+docker-compose.dev.yml
+.devcontainer/
+docker-desktop-engine.json
+
 # === IDE / 系统 ===
 .idea/
 *.iml

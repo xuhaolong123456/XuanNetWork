@@ -46,6 +46,11 @@
     <main class="drive-main">
       <header class="drive-topbar">
         <div class="breadcrumb"><span>我的网盘</span><span class="breadcrumb-slash">/</span><strong>{{ currentTitle }}</strong></div>
+        <label v-if="!isTrash" class="drive-search topbar-search">
+          <span aria-hidden="true">⌕</span>
+          <input v-model="searchInput" type="search" maxlength="128" placeholder="搜索我的文件" aria-label="搜索我的文件和文件夹" />
+          <button v-if="searchInput" type="button" aria-label="清空搜索" @click="searchInput = ''">×</button>
+        </label>
         <div class="top-account-name">{{ username }}</div>
         <button class="top-avatar" type="button" :aria-label="`${username} 的账户`">{{ initial }}</button>
       </header>
@@ -63,11 +68,6 @@
         <section class="file-section">
           <div class="section-heading">
             <div><h2>{{ currentTitle }}</h2><p>个人网盘</p></div>
-            <label v-if="!isTrash" class="drive-search">
-              <span aria-hidden="true">⌕</span>
-              <input v-model="searchInput" type="search" maxlength="128" placeholder="搜索当前文件夹" aria-label="搜索当前文件夹中的文件和子文件夹" />
-              <button v-if="searchInput" type="button" aria-label="清空搜索" @click="searchInput = ''">×</button>
-            </label>
             <div v-if="!isTrash" class="file-actions">
               <button class="folder-create-button" type="button" :disabled="fileOperationBusy" @click="openFolderDialog">新建文件夹</button>
               <button class="drive-upload" type="button" :disabled="fileOperationBusy" @click="chooseUpload"><span>＋</span>上传文件</button>
@@ -117,7 +117,7 @@
             <div v-for="item in items" :key="item.id" class="file-row" :class="{ selected: selectedIds.includes(item.id) }" @click="activateItem(item)">
               <input v-model="selectedIds" type="checkbox" :value="item.id" :aria-label="`选择 ${item.name}`" :disabled="fileOperationBusy" @click.stop />
               <button class="file-entry" type="button" @click.stop="activateItem(item)">
-                <span class="file-name"><span class="file-icon" :class="item.type.toLowerCase()">{{ item.type === 'DIRECTORY' ? '📁' : '📄' }}</span><strong><template v-if="searchMode && item.highlight"><span v-for="(segment, index) in item.highlight" :key="index" :class="{ 'search-match': segment.matched }">{{ segment.text }}</span></template><template v-else>{{ item.name }}</template><small v-if="isTrash" class="trash-origin">原目录：{{ item.parentName }}</small></strong></span>
+                <span class="file-name"><span class="file-icon" :class="item.type.toLowerCase()">{{ item.type === 'DIRECTORY' ? '📁' : '📄' }}</span><strong><span v-if="searchMode && item.highlightHtml" class="search-highlight-html" v-html="item.highlightHtml"></span><template v-else>{{ item.name }}</template><small v-if="isTrash" class="trash-origin">原目录：{{ item.parentName }}</small></strong></span>
                 <span class="file-date">{{ formatDate(isTrash ? item.deletedAt : item.updatedAt) }}</span>
                 <span class="file-size">{{ item.type === 'DIRECTORY' ? '—' : formatSize(item.sizeBytes) }}</span>
               </button>
@@ -330,7 +330,7 @@ let searchRequestId = 0
 let searchDebounceTimer = null
 let searchAbortController = null
 watch(searchInput, () => { searchPageNumber.value = 0 })
-watch(() => [searchInput.value, route.query.parentId, route.query.view, searchPageNumber.value], () => {
+watch(() => [searchInput.value, route.query.view, searchPageNumber.value], () => {
   clearTimeout(searchDebounceTimer)
   searchAbortController?.abort()
   const requestId = ++searchRequestId
@@ -359,7 +359,6 @@ async function runSearch(expectedRequestId = searchRequestId) {
   try {
     searchData.value = await searchFiles({
       keyword,
-      parentId: typeof route.query.parentId === 'string' ? route.query.parentId : null,
       page: searchPageNumber.value,
       size: 20,
       signal: controller.signal

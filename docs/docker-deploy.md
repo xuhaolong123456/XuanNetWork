@@ -1,6 +1,6 @@
 # Docker 源码部署
 
-服务器从 Git 拉取项目源码后，在项目根目录运行 Docker Compose。Compose 会在服务器上构建 Spring Boot 后端和 Vue 前端镜像，并启动 MySQL、Redis、Elasticsearch、后端与 Nginx 前端。Elasticsearch 使用持久化数据卷，且只接入内部网络，由后端容器访问，不发布宿主机端口。
+服务器从 Git 拉取项目源码后，在项目根目录运行 Docker Compose。Compose 会在服务器上构建 Spring Boot 后端和 Vue 前端镜像，并启动 MySQL、Redis、Elasticsearch、后端与 Nginx 前端。Dockerfile 使用 Maven Central 和 npm 官方 registry 下载依赖；Docker 基础镜像仍由 Docker Engine 的 Registry Mirror 配置控制。Elasticsearch 使用持久化数据卷，且只接入内部网络，由后端容器访问，不发布宿主机端口。
 
 ## 首次部署
 
@@ -91,4 +91,3 @@ docker compose logs -f canal-server
 ```
 
 看到 `successful to connect` 或实例启动日志即表示 Canal 已订阅到 MySQL。查看订阅进度可执行 `docker compose exec canal-server tail -f /home/admin/canal-server/logs/example/example.log`。
-
